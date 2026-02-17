@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
-import { RelayPool, signEvent, nsecToNpub, nsecToHex, npubToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, KIND_SETTINGS, encryptForSelf, decryptForSelf, type NostrEvent } from './nostr';
+import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
-import type { View, DeliveryRequest, DeliveryBid, PackageInfo, PersonsInfo, ProofOfDelivery, UserProfile, FormState, AppSettings } from './types';
+import type { View, DeliveryRequest, DeliveryBid, ProofOfDelivery, UserProfile, FormState } from './types';
+import { publishProfile, loadProfile, publishSettings, loadSettings } from './nostrService';
+import { aggregateDeliveries, computeNotifications, filterDeliveryLists } from './utils';
 
 import CreateRequestTab from './tabs/CreateRequestTab';
 import AwaitingBidsTab from './tabs/AwaitingBidsTab';
@@ -62,78 +64,25 @@ export default function DeliveryApp() {
     document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
   }, [showSettings]);
   const prevSettings = useRef(showSettings);
-  useEffect(() => { if (prevSettings.current && !showSettings && auth && privHex) publishProfile(profile); prevSettings.current = showSettings; }, [showSettings]);
+  useEffect(() => { if (prevSettings.current && !showSettings && auth && privHex) doPublishProfile(profile); prevSettings.current = showSettings; }, [showSettings]);
 
-  async function publishProfile(p: UserProfile) {
-    try {
-      const ev = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]);
-      const ok = await pool.current.publish(ev);
-      if (!ok) {
-        console.warn('Profile publish not confirmed, retrying...');
-        const ev2 = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]);
-        await pool.current.publish(ev2);
-      }
-    } catch (e) { console.error('publish profile:', e); }
-  }
-  async function loadProfile(npub: string): Promise<UserProfile> {
-    try {
-      const pubHex = npubToHex(npub);
-      const evs = await pool.current.query({ kinds: [KIND_PROFILE], '#d': [npub], authors: [pubHex], limit: 10 });
-      if (evs.length > 0) { evs.sort((a, b) => b.created_at - a.created_at); return JSON.parse(evs[0].content); }
-    } catch {}
-    return { npub, reputation: 0, completed_deliveries: 0, verified_identity: false };
-  }
-  async function publishSettings(hex: string, npub: string, settings: AppSettings) {
-    const encrypted = await encryptForSelf(hex, JSON.stringify(settings));
-    const ev = await signEvent(hex, KIND_SETTINGS, encrypted, [['d', npub]]);
-    const ok = await pool.current.publish(ev);
-    if (!ok) {
-      console.warn('Settings publish not confirmed by relays, retrying...');
-      const ev2 = await signEvent(hex, KIND_SETTINGS, encrypted, [['d', npub]]);
-      const ok2 = await pool.current.publish(ev2);
-      if (!ok2) console.error('Settings publish retry also failed');
-    }
-  }
-  async function loadSettings(npub: string, hex: string): Promise<AppSettings | null> {
-    const pubHex = npubToHex(npub);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const evs = await pool.current.query({ kinds: [KIND_SETTINGS], '#d': [npub], authors: [pubHex], limit: 10 });
-        if (evs.length > 0) {
-          evs.sort((a, b) => b.created_at - a.created_at);
-          const decrypted = await decryptForSelf(hex, evs[0].content);
-          return JSON.parse(decrypted) as AppSettings;
-        }
-      } catch (e) { console.error('load settings attempt', attempt + 1, ':', e); }
-      if (attempt === 0) await new Promise(r => setTimeout(r, 1500));
-    }
-    return null;
-  }
+  const doPublishProfile = (p: UserProfile) => publishProfile(pool.current, privHex, p);
+  const doLoadProfile = (npub: string) => loadProfile(pool.current, npub);
+  const doPublishSettings = (hex: string, npub: string, settings: { darkMode: boolean; nwcUrl: string }) => publishSettings(pool.current, hex, npub, settings);
+  const doLoadSettings = (npub: string, hex: string) => loadSettings(pool.current, npub, hex);
   async function loadData() {
     try {
       setLoading(true);
       const devEvs = await pool.current.query({ kinds: [KIND_DELIVERY], limit: 500 });
-      const dMap = new Map<string, DeliveryRequest>();
-      for (const ev of devEvs) { try { const d = JSON.parse(ev.content) as DeliveryRequest; const ex = dMap.get(d.id); if (!ex || ev.created_at > (ex.created_at || 0)) dMap.set(d.id, d); } catch {} }
       const bidEvs = await pool.current.query({ kinds: [KIND_BID], limit: 500 });
-      const bMap = new Map<string, DeliveryBid[]>();
-      for (const ev of bidEvs) { try { const b = JSON.parse(ev.content) as DeliveryBid; const did = ev.tags.find(t => t[0] === 'delivery_id')?.[1]; if (did) { if (!bMap.has(did)) bMap.set(did, []); bMap.get(did)!.push(b); } } catch {} }
       const stEvs = await pool.current.query({ kinds: [KIND_STATUS], limit: 500 });
-      const sMap = new Map<string, any[]>();
-      for (const ev of stEvs) { try { const u = JSON.parse(ev.content); const did = ev.tags.find(t => t[0] === 'delivery_id')?.[1]; if (did) { if (!sMap.has(did)) sMap.set(did, []); sMap.get(did)!.push({ ...u, _ts: ev.created_at }); } } catch {} }
-      const res: DeliveryRequest[] = [];
-      for (const [id, d] of dMap) {
-        d.bids = bMap.get(id) || []; d.bids.sort((a, b) => a.created_at - b.created_at);
-        const ups = sMap.get(id) || []; ups.sort((a, b) => (a._ts||0) - (b._ts||0));
-        if (ups.length > 0) { const l = ups[ups.length-1]; if (l.status) d.status = l.status; if (l.proof_of_delivery) d.proof_of_delivery = l.proof_of_delivery; if (l.completed_at) d.completed_at = l.completed_at; if (l.accepted_bid) d.accepted_bid = l.accepted_bid; if (l.sender_rating != null) d.sender_rating = l.sender_rating; if (l.sender_feedback) d.sender_feedback = l.sender_feedback; }
-        res.push(d);
-      }
+      const res = aggregateDeliveries(devEvs, bidEvs, stEvs);
       setDeliveries(res);
       const act = res.find(r => (r.status==='accepted'||r.status==='intransit'||r.status==='completed') && r.bids.some(b => b.courier===profile.npub && r.accepted_bid===b.id));
       setActiveDelivery(act || null);
       const nps = new Set<string>(); res.filter(r => (r.status==='confirmed'||r.status==='completed') && r.accepted_bid).forEach(d => { const cb = d.bids.find(b => b.id===d.accepted_bid); if (cb) nps.add(cb.courier); });
-      const profs: Record<string, UserProfile> = {}; for (const np of nps) { try { profs[np] = await loadProfile(np); } catch {} } setCourierProfiles(profs);
-      if (profile.npub) { const up = await loadProfile(profile.npub); setProfile(p => ({ ...p, reputation: up.reputation, completed_deliveries: up.completed_deliveries, display_name: up.display_name || p.display_name })); }
+      const profs: Record<string, UserProfile> = {}; for (const np of nps) { try { profs[np] = await doLoadProfile(np); } catch {} } setCourierProfiles(profs);
+      if (profile.npub) { const up = await doLoadProfile(profile.npub); setProfile(p => ({ ...p, reputation: up.reputation, completed_deliveries: up.completed_deliveries, display_name: up.display_name || p.display_name })); }
       setError(null);
     } catch (e) { setError('Failed to load deliveries'); console.error(e); } finally { setLoading(false); }
   }
@@ -141,8 +90,8 @@ export default function DeliveryApp() {
   async function handleLogin() {
     try { setLoading(true); setError(null); if (!isValidNsec(nsecInput.trim())) { setError('Invalid nsec format.'); setLoading(false); return; }
       const npub = await nsecToNpub(nsecInput.trim()); const hex = nsecToHex(nsecInput.trim()); setPrivHex(hex);
-      const p = await loadProfile(npub); setProfile({ ...p, npub, verified_identity: true });
-      const saved = await loadSettings(npub, hex);
+      const p = await doLoadProfile(npub); setProfile({ ...p, npub, verified_identity: true });
+      const saved = await doLoadSettings(npub, hex);
       if (saved) { setDarkMode(saved.darkMode); setNwcUrl(saved.nwcUrl || ''); }
       setAuth(true); setShowLogin(false); setNsecInput('');
     } catch { setError('Failed to login.'); } finally { setLoading(false); }
@@ -150,16 +99,16 @@ export default function DeliveryApp() {
   function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
-    if (privHex && profile.npub) publishSettings(privHex, profile.npub, { darkMode: next, nwcUrl });
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode: next, nwcUrl });
   }
   function handleNwcUrlChange(url: string) {
     setNwcUrl(url);
-    if (privHex && profile.npub) publishSettings(privHex, profile.npub, { darkMode, nwcUrl: url });
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl: url });
   }
 
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
-      const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+7*86400 };
+      const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400 };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',id],['sender',profile.npub],['status','open']]); await pool.current.publish(ev);
       alert('Request created!'); resetForm(); await loadData(); setView('awaiting');
     } catch { setError('Failed to create request'); } finally { setLoading(false); }
@@ -205,7 +154,7 @@ export default function DeliveryApp() {
   async function confirmDel(d: DeliveryRequest) {
     if (rating===0) { setError('Select a rating'); return; }
     try { setLoading(true); const cb = d.bids.find(b=>b.id===d.accepted_bid);
-      if (cb) { const cp = await loadProfile(cb.courier); const nr = cp.completed_deliveries===0 ? rating : 5-(5-cp.reputation)*0.9+(rating-cp.reputation)*0.1;
+      if (cb) { const cp = await doLoadProfile(cb.courier); const nr = cp.completed_deliveries===0 ? rating : 5-(5-cp.reputation)*0.9+(rating-cp.reputation)*0.1;
         const up: UserProfile = { ...cp, reputation: Math.min(5,Math.max(0,nr)), completed_deliveries: cp.completed_deliveries+1, verified_identity: true };
         const pe = await signEvent(privHex, KIND_PROFILE, JSON.stringify(up), [['d',cb.courier]]); await pool.current.publish(pe); }
       const upd = { status: 'confirmed', sender_rating: rating, sender_feedback: feedback.trim()||undefined, completed_at: d.completed_at||Math.floor(Date.now()/1000), accepted_bid: d.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
@@ -246,21 +195,10 @@ export default function DeliveryApp() {
   );
 
   // Notification counts
-  const newBids = deliveries.filter(r=>r.sender===profile.npub&&r.bids.length>0&&r.status==='open'&&!seenBids[r.id]).length;
-  const compSender = deliveries.filter(r=>r.sender===profile.npub&&r.status==='completed').length;
-  const bidAccepted = deliveries.filter(r=>r.bids.some(b=>b.courier===profile.npub)&&r.status==='accepted'&&r.bids.find(b=>b.courier===profile.npub&&r.accepted_bid===b.id)&&!seenActive[r.id]).length;
-  const compCourier = deliveries.filter(r=>r.status==='confirmed'&&r.bids.some(b=>b.courier===profile.npub&&r.accepted_bid===b.id)&&!seenCompleted.has(r.id)).length;
+  const { newBids, compSender, bidAccepted, compCourier } = computeNotifications(deliveries, profile.npub, seenBids, seenActive, seenCompleted);
 
-  // Filtered delivery lists for sender tabs
-  const senderReqs = deliveries.filter(r => r.sender === profile.npub);
-  const awaitingBids = senderReqs.filter(r => r.status === 'open' && r.bids.length === 0);
-  const bidsPending = senderReqs.filter(r => r.status === 'open' && r.bids.length > 0);
-  const inTransport = senderReqs.filter(r => r.status === 'accepted' || r.status === 'intransit');
-  const completedReqs = senderReqs.filter(r => r.status === 'completed' || r.status === 'confirmed');
-
-  // Courier filtered lists
-  const browseJobs = deliveries.filter(r => r.status === 'open');
-  const completedTransports = deliveries.filter(r => r.status === 'confirmed' && r.bids.some(b => b.courier === profile.npub && r.accepted_bid === b.id));
+  // Filtered delivery lists
+  const { awaitingBids, bidsPending, inTransport, completedReqs, browseJobs, completedTransports } = filterDeliveryLists(deliveries, profile.npub);
 
   // Tab button helper
   const tabBtn = (v: View, label: string, badge?: number) => (
