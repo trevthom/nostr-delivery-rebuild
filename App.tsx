@@ -41,6 +41,7 @@ export default function DeliveryApp() {
   const [rating, setRating] = useState(0);
   const [isPkg, setIsPkg] = useState(false);
   const [isPerson, setIsPerson] = useState(false);
+  const [relayConnected, setRelayConnected] = useState(false);
   const [form, setForm] = useState<FormState>({
     pickupAddr: '', pickupInst: '', dropoffAddr: '', dropoffInst: '',
     packages: [{ size: PkgSize.SMALL, description: '', fragile: false, requires_signature: false }],
@@ -51,7 +52,7 @@ export default function DeliveryApp() {
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => { pool.current.connect().then(() => console.log('Relays connected:', pool.current.connected)); }, []);
+  useEffect(() => { pool.current.connect().then(() => { setRelayConnected(pool.current.connected); console.log('Relays connected:', pool.current.connected); }); }, []);
   useEffect(() => { if (auth) loadData(); }, [auth, mode]);
   useEffect(() => {
     if (!showSettings) return;
@@ -182,13 +183,13 @@ export default function DeliveryApp() {
         {error && <div className={`mb-4 p-3 ${dm?'bg-red-900 border-red-700 text-red-200':'bg-red-50 border-red-200 text-red-700'} border rounded-lg text-sm`}>{error}</div>}
         <div className="space-y-4">
           <div><label className={`block text-sm font-medium ${dm?'text-gray-300':'text-gray-700'} mb-2`}>Nostr Private Key (nsec)</label>
-            <input type="password" value={nsecInput} onChange={e=>setNsecInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!loading&&pool.current.connected)handleLogin();}} placeholder="nsec1..." spellCheck={false} className={`${inp} font-mono text-sm`} />
+            <input type="password" value={nsecInput} onChange={e=>setNsecInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!loading&&relayConnected)handleLogin();}} placeholder="nsec1..." spellCheck={false} className={`${inp} font-mono text-sm`} />
             <p className={`mt-2 text-xs ${sub}`}>Enter your Nostr private key (nsec1...) to login</p></div>
-          <button onClick={handleLogin} disabled={loading||!pool.current.connected||!nsecInput.trim()} className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2">
+          <button onClick={handleLogin} disabled={loading||!relayConnected||!nsecInput.trim()} className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2">
             {loading?'Logging in...':<><Key className="w-5 h-5"/>Login with Nostr</>}</button>
           <div className={`mt-4 p-4 ${dm?'bg-yellow-900 border-yellow-700':'bg-yellow-50 border-yellow-200'} border rounded-lg`}><p className={`text-sm ${dm?'text-yellow-200':'text-yellow-900'}`}><strong>Security:</strong> Your nsec is only used to derive your npub and sign events. It is not stored or transmitted.</p></div>
         </div>
-        <div className="mt-6 flex items-center justify-center gap-4 text-sm"><div className={`flex items-center gap-2 ${pool.current.connected?'text-green-600':'text-red-600'}`}><div className={`w-2 h-2 rounded-full ${pool.current.connected?'bg-green-500':'bg-red-500'}`}/>Relays {pool.current.connected?'Connected':'Connecting...'}</div></div>
+        <div className="mt-6 flex items-center justify-center gap-4 text-sm"><div className={`flex items-center gap-2 ${relayConnected?'text-green-600':'text-red-600'}`}><div className={`w-2 h-2 rounded-full ${relayConnected?'bg-green-500':'bg-red-500'}`}/>Relays {relayConnected?'Connected':'Connecting...'}</div></div>
       </div>
     </div>
   );
