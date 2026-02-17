@@ -166,6 +166,29 @@ export const KIND_DELIVERY = 35000;
 export const KIND_BID = 35001;
 export const KIND_STATUS = 35002;
 export const KIND_PROFILE = 35009;
+export const KIND_SETTINGS = 35010;
+
+// ---- Settings encryption (AES-GCM, keyed by private key) ----
+export async function encryptForSelf(privHex: string, plaintext: string): Promise<string> {
+  const keyBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(privHex)));
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+  const combined = new Uint8Array(iv.length + encrypted.byteLength);
+  combined.set(iv);
+  combined.set(new Uint8Array(encrypted), iv.length);
+  return btoa(String.fromCharCode(...combined));
+}
+
+export async function decryptForSelf(privHex: string, ciphertext: string): Promise<string> {
+  const keyBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(privHex)));
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const combined = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
+  const iv = combined.slice(0, 12);
+  const data = combined.slice(12);
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+  return new TextDecoder().decode(decrypted);
+}
 
 // ---- Unique ID generation ----
 export function genId(): string {

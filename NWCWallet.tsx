@@ -4,6 +4,8 @@ import { getStyles } from './types';
 
 interface NWCWalletProps {
   darkMode: boolean;
+  savedNwcUrl?: string;
+  onNwcUrlChange?: (url: string) => void;
 }
 
 interface Transaction {
@@ -20,9 +22,7 @@ interface Transaction {
   metadata?: Record<string, unknown>;
 }
 
-const NWC_URL_KEY = 'nostr_delivery_nwc_url';
-
-export default function NWCWallet({ darkMode }: NWCWalletProps) {
+export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWCWalletProps) {
   const { dm, inp, txt, sec } = getStyles(darkMode);
 
   const [nwcUrl, setNwcUrl] = useState('');
@@ -48,15 +48,14 @@ export default function NWCWallet({ darkMode }: NWCWalletProps) {
 
   const clientRef = useRef<any>(null);
 
-  // Load saved connection on mount
+  // Auto-connect from relay-backed saved URL
   useEffect(() => {
-    const saved = localStorage.getItem(NWC_URL_KEY);
-    if (saved) {
-      setNwcUrl(saved);
-      connectWallet(saved);
+    if (savedNwcUrl && !connected && !connecting) {
+      setNwcUrl(savedNwcUrl);
+      connectWallet(savedNwcUrl);
     }
     return () => { if (clientRef.current) { try { clientRef.current.close(); } catch {} } };
-  }, []);
+  }, [savedNwcUrl]);
 
   const connectWallet = useCallback(async (url: string) => {
     const trimmed = url.trim();
@@ -75,7 +74,7 @@ export default function NWCWallet({ darkMode }: NWCWalletProps) {
       const balRes = await client.getBalance();
       setBalance(balRes.balance);
       setConnected(true);
-      localStorage.setItem(NWC_URL_KEY, trimmed);
+      if (onNwcUrlChange) onNwcUrlChange(trimmed);
     } catch (e: any) {
       setError(e?.message || 'Failed to connect wallet');
       setConnected(false);
@@ -98,7 +97,7 @@ export default function NWCWallet({ darkMode }: NWCWalletProps) {
       setShowTxns(false);
       setGeneratedInvoice('');
       setPayResult(null);
-      localStorage.removeItem(NWC_URL_KEY);
+      if (onNwcUrlChange) onNwcUrlChange('');
     } finally {
       setDisconnecting(false);
     }
