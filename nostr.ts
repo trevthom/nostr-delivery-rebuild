@@ -143,11 +143,15 @@ export class RelayPool {
         const eventId = msg[1] as string;
         const accepted = msg[2] as boolean;
         const pp = this.publishPending.get(eventId);
-        if (pp && accepted) {
-          pp.accepted = true;
-          clearTimeout(pp.timer);
-          this.publishPending.delete(eventId);
-          pp.resolve(true);
+        if (pp) {
+          if (accepted) {
+            pp.accepted = true;
+            clearTimeout(pp.timer);
+            this.publishPending.delete(eventId);
+            pp.resolve(true);
+          } else {
+            console.warn('Relay rejected event', eventId, msg[3] || '');
+          }
         }
       }
     } catch { /* ignore */ }
@@ -185,6 +189,27 @@ export class RelayPool {
       const msg = JSON.stringify(['REQ', subId, filters]);
       this.sockets.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
     });
+  }
+
+  async publishWithRetry(event: NostrEvent, maxRetries = 3): Promise<boolean> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const ok = await this.publish(event);
+      if (ok) return true;
+      console.warn(`Publish attempt ${attempt + 1} failed, retrying...`);
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
+    console.error('All publish attempts failed for event', event.id);
+    return false;
+  }
+
+  async verifyPublished(event: NostrEvent, timeoutMs = 5000): Promise<boolean> {
+    const tag = event.tags.find(t => t[0] === 'd');
+    const filters: Record<string, any> = { ids: [event.id], limit: 1 };
+    if (tag) { filters['#d'] = [tag[1]]; delete filters.ids; filters.kinds = [event.kind]; }
+    try {
+      const evs = await this.query(filters, timeoutMs);
+      return evs.length > 0;
+    } catch { return false; }
   }
 
   disconnect() {

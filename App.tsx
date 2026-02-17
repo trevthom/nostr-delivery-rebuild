@@ -53,6 +53,8 @@ export default function DeliveryApp() {
     offer: '', insurance: '', timeWindow: 'asap', customDate: ''
   });
   const pool = useRef<RelayPool>(new RelayPool());
+  const pendingLocal = useRef<Map<string, DeliveryRequest>>(new Map());
+  const pendingBids = useRef<Map<string, DeliveryBid[]>>(new Map());
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -77,6 +79,33 @@ export default function DeliveryApp() {
       const bidEvs = await pool.current.query({ kinds: [KIND_BID], limit: 500 });
       const stEvs = await pool.current.query({ kinds: [KIND_STATUS], limit: 500 });
       const res = aggregateDeliveries(devEvs, bidEvs, stEvs);
+
+      // Merge pending local deliveries that relay hasn't returned yet
+      const relayIds = new Set(res.map(r => r.id));
+      for (const [id, d] of pendingLocal.current) {
+        if (relayIds.has(id)) {
+          // Relay has it now, remove from pending
+          pendingLocal.current.delete(id);
+        } else {
+          // Relay doesn't have it yet, keep in merged results
+          res.push(d);
+        }
+      }
+      // Merge pending local bids
+      for (const [rid, bids] of pendingBids.current) {
+        const req = res.find(r => r.id === rid);
+        if (req) {
+          const existingBidIds = new Set(req.bids.map(b => b.id));
+          const newBids = bids.filter(b => !existingBidIds.has(b.id));
+          if (newBids.length === 0) {
+            pendingBids.current.delete(rid);
+          } else {
+            req.bids = [...req.bids, ...newBids];
+            req.bids.sort((a, b) => a.created_at - b.created_at);
+          }
+        }
+      }
+
       setDeliveries(res);
       const act = res.find(r => (r.status==='accepted'||r.status==='intransit'||r.status==='completed') && r.bids.some(b => b.courier===profile.npub && r.accepted_bid===b.id));
       setActiveDelivery(act || null);
@@ -96,7 +125,7 @@ export default function DeliveryApp() {
       setAuth(true); setShowLogin(false); setNsecInput('');
     } catch { setError('Failed to login.'); } finally { setLoading(false); }
   }
-  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); }
+  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
     if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode: next, nwcUrl });
@@ -109,31 +138,45 @@ export default function DeliveryApp() {
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
       const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400 };
-      const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',id],['sender',profile.npub],['status','open']]); await pool.current.publish(ev);
-      // Optimistically add to local state so it appears immediately
+      const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',id],['sender',profile.npub],['status','open']]);
+      // Track locally so loadData merges it until relay confirms
+      pendingLocal.current.set(id, d);
       setDeliveries(prev => [...prev.filter(r => r.id !== id), d]);
-      resetForm(); setView('awaiting');
-      // Background refresh from relays
-      loadData();
-    } catch { setError('Failed to create request'); } finally { setLoading(false); }
+      resetForm(); setView('awaiting'); setLoading(false);
+      // Publish with retry in background
+      const ok = await pool.current.publishWithRetry(ev);
+      if (!ok) console.error('Failed to publish delivery to any relay');
+      // Give relay time to index, then refresh
+      await new Promise(r => setTimeout(r, 2000));
+      await loadData();
+    } catch { setError('Failed to create request'); setLoading(false); }
   }
   async function updateDel() {
     if (!editing) return; try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
       const d: DeliveryRequest = { ...editing, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg?form.packages:[], persons: isPerson?form.persons:undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow };
-      const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',editing.id],['sender',profile.npub],['status','open']]); await pool.current.publish(ev);
-      // Optimistically update in local state
+      const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',editing.id],['sender',profile.npub],['status','open']]);
+      pendingLocal.current.set(editing.id, d);
       setDeliveries(prev => prev.map(r => r.id === editing.id ? d : r));
-      setEditing(null); resetForm(); setView('awaiting');
-      loadData();
-    } catch { setError('Failed to update'); } finally { setLoading(false); }
+      setEditing(null); resetForm(); setView('awaiting'); setLoading(false);
+      const ok = await pool.current.publishWithRetry(ev);
+      if (!ok) console.error('Failed to publish update to any relay');
+      await new Promise(r => setTimeout(r, 2000));
+      await loadData();
+    } catch { setError('Failed to update'); setLoading(false); }
   }
   async function placeBid(rid: string, amt: number) {
     try { setLoading(true); const bid: DeliveryBid = { id: genId(), courier: profile.npub, amount: amt, estimated_time: '1-2 hours', reputation: profile.reputation, completed_deliveries: profile.completed_deliveries, message: '', created_at: Math.floor(Date.now()/1000) };
-      const ev = await signEvent(privHex, KIND_BID, JSON.stringify(bid), [['delivery_id',rid],['courier',profile.npub]]); await pool.current.publish(ev);
-      // Optimistically add bid to local state
+      const ev = await signEvent(privHex, KIND_BID, JSON.stringify(bid), [['delivery_id',rid],['courier',profile.npub]]);
+      // Track locally so loadData merges it until relay confirms
+      const existing = pendingBids.current.get(rid) || [];
+      pendingBids.current.set(rid, [...existing, bid]);
       setDeliveries(prev => prev.map(r => r.id === rid ? { ...r, bids: [...r.bids, bid] } : r));
-      loadData();
-    } catch { setError('Failed to place bid'); } finally { setLoading(false); }
+      setLoading(false);
+      const ok = await pool.current.publishWithRetry(ev);
+      if (!ok) console.error('Failed to publish bid to any relay');
+      await new Promise(r => setTimeout(r, 2000));
+      await loadData();
+    } catch { setError('Failed to place bid'); setLoading(false); }
   }
   async function acceptBid(req: DeliveryRequest, bi: number) {
     try { setLoading(true); const bid = req.bids[bi]; const upd = { status: 'accepted', accepted_bid: bid.id, timestamp: Math.floor(Date.now()/1000) };
