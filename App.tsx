@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
 import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, type NostrEvent } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
+import NWCWallet from './NWCWallet';
 import type { View, DeliveryRequest, DeliveryBid, PackageInfo, PersonsInfo, ProofOfDelivery, UserProfile, FormState } from './types';
 
 import CreateRequestTab from './tabs/CreateRequestTab';
@@ -247,7 +248,7 @@ export default function DeliveryApp() {
           <div className={`p-4 ${sec} rounded-lg`}><div className="flex items-center justify-between mb-2"><h3 className={`font-semibold ${txt}`}>Dark Mode</h3>
             <button onClick={()=>setDarkMode(!dm)} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
             <p className={`text-sm ${dm?'text-gray-300':'text-gray-600'}`}>Switch theme</p></div>
-          <div className={`p-4 ${sec} rounded-lg`}><h3 className={`font-semibold ${txt} mb-2`}>Bitcoin Wallet (NWC)</h3><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'}`}>NWC wallet integration placeholder.</p></div>
+          <NWCWallet darkMode={darkMode} />
         </div>
         <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
