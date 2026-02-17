@@ -58,6 +58,7 @@ function bech32Decode(s: string): { hrp: string; data: Uint8Array } {
 // ---- Key conversion ----
 export const nsecToHex = (nsec: string): string => { const { hrp, data } = bech32Decode(nsec); if (hrp !== 'nsec') throw new Error('not nsec'); return bytesToHex(data); };
 export const hexToNpub = (hex: string): string => bech32Encode('npub', hexToBytes(hex));
+export const npubToHex = (npub: string): string => { const { hrp, data } = bech32Decode(npub); if (hrp !== 'npub') throw new Error('not npub'); return bytesToHex(data); };
 export const isValidNsec = (s: string): boolean => s.startsWith('nsec1') && s.length >= 62 && s.length <= 65;
 
 export async function nsecToNpub(nsec: string): Promise<string> {
@@ -99,7 +100,8 @@ const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.no
 
 export class RelayPool {
   private sockets: Map<string, WebSocket> = new Map();
-  private pending: Map<string, { resolve: (events: NostrEvent[]) => void; events: NostrEvent[]; timer: ReturnType<typeof setTimeout> }> = new Map();
+  private pending: Map<string, { resolve: (events: NostrEvent[]) => void; events: NostrEvent[]; timer: ReturnType<typeof setTimeout>; eoseCount: number; totalRelays: number }> = new Map();
+  private publishPending: Map<string, { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout>; accepted: boolean }> = new Map();
   public connected = false;
 
   async connect(urls: string[] = DEFAULT_RELAYS): Promise<void> {
@@ -128,7 +130,25 @@ export class RelayPool {
       } else if (msg[0] === 'EOSE' && msg[1]) {
         const subId = msg[1] as string;
         const p = this.pending.get(subId);
-        if (p) { clearTimeout(p.timer); this.pending.delete(subId); this.closeSubscription(subId); p.resolve(p.events); }
+        if (p) {
+          p.eoseCount++;
+          if (p.eoseCount >= p.totalRelays) {
+            clearTimeout(p.timer);
+            this.pending.delete(subId);
+            this.closeSubscription(subId);
+            p.resolve(p.events);
+          }
+        }
+      } else if (msg[0] === 'OK' && msg[1]) {
+        const eventId = msg[1] as string;
+        const accepted = msg[2] as boolean;
+        const pp = this.publishPending.get(eventId);
+        if (pp && accepted) {
+          pp.accepted = true;
+          clearTimeout(pp.timer);
+          this.publishPending.delete(eventId);
+          pp.resolve(true);
+        }
       }
     } catch { /* ignore */ }
   }
@@ -138,17 +158,30 @@ export class RelayPool {
     this.sockets.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
   }
 
-  async publish(event: NostrEvent): Promise<void> {
+  async publish(event: NostrEvent): Promise<boolean> {
     const msg = JSON.stringify(['EVENT', event]);
-    this.sockets.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
-    await new Promise(r => setTimeout(r, 500)); // small wait for relay acceptance
+    const openSockets: WebSocket[] = [];
+    this.sockets.forEach(ws => { if (ws.readyState === WebSocket.OPEN) openSockets.push(ws); });
+    if (openSockets.length === 0) return false;
+    openSockets.forEach(ws => ws.send(msg));
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { this.publishPending.delete(event.id); resolve(false); }, 5000);
+      this.publishPending.set(event.id, { resolve, timer, accepted: false });
+    });
   }
 
-  async query(filters: Record<string, any>, timeoutMs = 6000): Promise<NostrEvent[]> {
+  async query(filters: Record<string, any>, timeoutMs = 8000): Promise<NostrEvent[]> {
     const subId = 'q' + Math.random().toString(36).substring(2, 10);
+    const totalRelays = Array.from(this.sockets.values()).filter(ws => ws.readyState === WebSocket.OPEN).length;
+    if (totalRelays === 0) return [];
     return new Promise((resolve) => {
-      const timer = setTimeout(() => { this.pending.delete(subId); this.closeSubscription(subId); resolve([]); }, timeoutMs);
-      this.pending.set(subId, { resolve, events: [], timer });
+      const timer = setTimeout(() => {
+        const p = this.pending.get(subId);
+        this.pending.delete(subId);
+        this.closeSubscription(subId);
+        resolve(p ? p.events : []);
+      }, timeoutMs);
+      this.pending.set(subId, { resolve, events: [], timer, eoseCount: 0, totalRelays });
       const msg = JSON.stringify(['REQ', subId, filters]);
       this.sockets.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
     });
