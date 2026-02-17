@@ -209,7 +209,7 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWC
         )}
         <div className="space-y-3">
           <input
-            type="password"
+            type="text"
             value={nwcUrl}
             onChange={e => setNwcUrl(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !connecting) connectWallet(nwcUrl); }}
