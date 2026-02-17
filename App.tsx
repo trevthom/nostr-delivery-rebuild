@@ -313,10 +313,9 @@ export default function DeliveryApp() {
           <NWCWallet darkMode={darkMode} savedNwcUrl={nwcUrl} onNwcUrlChange={handleNwcUrlChange} />
         </div>
         <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className={`p-4 ${dm?'bg-purple-900':'bg-purple-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Username</p>
             <input type="text" value={profile.display_name||''} onChange={e=>setProfile({...profile,display_name:e.target.value})} onBlur={handleUsernameBlur} placeholder="Optional" spellCheck={false} className={`w-full text-sm font-medium ${dm?'bg-purple-800 text-purple-300 placeholder-purple-500':'bg-white text-purple-600 placeholder-purple-400'} border ${dm?'border-purple-700':'border-purple-300'} rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500`}/></div>
-          <div className={`p-4 ${dm?'bg-blue-900':'bg-blue-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>ID</p><p className={`text-xs font-mono ${dm?'text-blue-400':'text-blue-600'} truncate`}>{profile.display_name?`${profile.display_name} (${profile.npub})`:profile.npub}</p></div>
           <div className={`p-4 ${dm?'bg-orange-900':'bg-orange-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Reputation</p><p className={`text-2xl font-bold ${dm?'text-orange-400':'text-orange-600'}`}>{profile.completed_deliveries===0?'N/A':`${profile.reputation.toFixed(1)} ⭐`}</p></div>
           <div className={`p-4 ${dm?'bg-green-900':'bg-green-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Deliveries Completed</p><p className={`text-2xl font-bold ${dm?'text-green-400':'text-green-600'}`}>{profile.completed_deliveries}</p></div>
         </div>

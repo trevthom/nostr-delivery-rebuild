@@ -15,8 +15,7 @@ export async function publishProfile(pool: RelayPool, privHex: string, p: UserPr
 
 export async function loadProfile(pool: RelayPool, npub: string): Promise<UserProfile> {
   try {
-    const pubHex = npubToHex(npub);
-    const evs = await pool.query({ kinds: [KIND_PROFILE], '#d': [npub], authors: [pubHex], limit: 10 });
+    const evs = await pool.query({ kinds: [KIND_PROFILE], '#d': [npub], limit: 10 });
     if (evs.length > 0) {
       evs.sort((a, b) => b.created_at - a.created_at);
       return JSON.parse(evs[0].content);
