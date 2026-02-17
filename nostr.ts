@@ -171,3 +171,23 @@ export const KIND_PROFILE = 35009;
 export function genId(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
 }
+
+// ---- Self-encryption (AES-256-GCM keyed by user's privkey) ----
+export async function encryptForSelf(data: string, privHex: string): Promise<string> {
+  const keyBytes = hexToBytes(privHex);
+  const key = await crypto.subtle.importKey('raw', keyBytes.buffer as ArrayBuffer, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(data));
+  const buf = new Uint8Array(iv.length + ct.byteLength);
+  buf.set(iv);
+  buf.set(new Uint8Array(ct), iv.length);
+  return btoa(String.fromCharCode(...buf));
+}
+
+export async function decryptForSelf(encrypted: string, privHex: string): Promise<string> {
+  const keyBytes = hexToBytes(privHex);
+  const key = await crypto.subtle.importKey('raw', keyBytes.buffer as ArrayBuffer, 'AES-GCM', false, ['decrypt']);
+  const buf = Uint8Array.from(atob(encrypted), c => c.charCodeAt(0));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.slice(12));
+  return new TextDecoder().decode(pt);
+}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
-import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, type NostrEvent } from './nostr';
+import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, formatNpub, genId, encryptForSelf, decryptForSelf, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, type NostrEvent } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
 import type { View, DeliveryRequest, DeliveryBid, PackageInfo, PersonsInfo, ProofOfDelivery, UserProfile, FormState } from './types';
@@ -43,6 +43,7 @@ export default function DeliveryApp() {
   const [isPkg, setIsPkg] = useState(false);
   const [isPerson, setIsPerson] = useState(false);
   const [relayConnected, setRelayConnected] = useState(false);
+  const [nwcUrl, setNwcUrl] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({
     pickupAddr: '', pickupInst: '', dropoffAddr: '', dropoffInst: '',
     packages: [{ size: PkgSize.SMALL, description: '', fragile: false, requires_signature: false }],
@@ -61,8 +62,17 @@ export default function DeliveryApp() {
     document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
   }, [showSettings]);
   const prevSettings = useRef(showSettings);
-  useEffect(() => { if (prevSettings.current && !showSettings && auth && privHex) publishProfile(profile); prevSettings.current = showSettings; }, [showSettings]);
-  useEffect(() => { localStorage.setItem('nostr_delivery_dark_mode', String(darkMode)); }, [darkMode]);
+  useEffect(() => {
+    if (prevSettings.current && !showSettings && auth && privHex) {
+      (async () => {
+        const p: UserProfile = { ...profile, dark_mode: darkMode };
+        if (nwcUrl) { try { p.encrypted_nwc_url = await encryptForSelf(nwcUrl, privHex); } catch {} }
+        else { delete p.encrypted_nwc_url; }
+        publishProfile(p);
+      })();
+    }
+    prevSettings.current = showSettings;
+  }, [showSettings]);
 
   async function publishProfile(p: UserProfile) {
     try { const ev = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]); await pool.current.publish(ev); } catch (e) { console.error('publish profile:', e); }
@@ -103,10 +113,13 @@ export default function DeliveryApp() {
   async function handleLogin() {
     try { setLoading(true); setError(null); if (!isValidNsec(nsecInput.trim())) { setError('Invalid nsec format.'); setLoading(false); return; }
       const npub = await nsecToNpub(nsecInput.trim()); const hex = nsecToHex(nsecInput.trim()); setPrivHex(hex);
-      const p = await loadProfile(npub); setProfile({ ...p, npub, verified_identity: true }); setAuth(true); setShowLogin(false); setNsecInput('');
+      const p = await loadProfile(npub);
+      if (p.dark_mode !== undefined) setDarkMode(p.dark_mode);
+      if (p.encrypted_nwc_url) { try { setNwcUrl(await decryptForSelf(p.encrypted_nwc_url, hex)); } catch {} }
+      setProfile({ ...p, npub, verified_identity: true }); setAuth(true); setShowLogin(false); setNsecInput('');
     } catch { setError('Failed to login.'); } finally { setLoading(false); }
   }
-  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); }
+  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); setNwcUrl(null); }
 
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
@@ -249,7 +262,7 @@ export default function DeliveryApp() {
           <div className={`p-4 ${sec} rounded-lg`}><div className="flex items-center justify-between mb-2"><h3 className={`font-semibold ${txt}`}>Dark Mode</h3>
             <button onClick={()=>setDarkMode(!dm)} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
             <p className={`text-sm ${dm?'text-gray-300':'text-gray-600'}`}>Switch theme</p></div>
-          <NWCWallet darkMode={darkMode} />
+          <NWCWallet darkMode={darkMode} savedNwcUrl={nwcUrl || undefined} onNwcUrlChange={setNwcUrl} />
         </div>
         <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
