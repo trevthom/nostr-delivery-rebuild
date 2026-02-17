@@ -52,8 +52,8 @@ export default function AwaitingBidsTab({ darkMode, deliveries, loading, onEdit,
               <p className={`text-lg font-bold ${dm ? 'text-blue-400' : 'text-blue-600'}`}>{req.insurance_amount.toLocaleString()} sats</p>
             </div>}
             <div className="flex gap-2">
-              <button onClick={() => onEdit(req)} disabled={loading} className="flex-1 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white font-medium py-2 rounded-lg">Edit</button>
-              <button onClick={() => onDelete(req.id)} disabled={loading} className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 text-white font-medium py-2 rounded-lg">Delete</button>
+              <button onClick={() => onEdit(req)} className={`flex-1 border-2 font-medium py-2 rounded-lg ${dm ? 'border-blue-400 text-blue-400 hover:bg-blue-400 hover:text-white' : 'border-blue-600 text-blue-600 hover:bg-blue-600 hover:text-white'}`}>Edit</button>
+              <button onClick={() => onDelete(req.id)} className="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-2 rounded-lg">Delete</button>
             </div>
           </div>
           );
