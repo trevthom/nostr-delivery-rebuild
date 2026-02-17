@@ -135,6 +135,16 @@ export default function DeliveryApp() {
     if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl: url });
   }
 
+  async function publishAndVerify(ev: ReturnType<typeof signEvent> extends Promise<infer T> ? T : never, label: string): Promise<boolean> {
+    const ok = await pool.current.publishWithRetry(ev);
+    if (!ok) { setError(`Failed to publish ${label} to relays. Check your connection.`); return false; }
+    // Give relay time to index, then verify
+    await new Promise(r => setTimeout(r, 1500));
+    const verified = await pool.current.verifyPublished(ev);
+    if (!verified) console.warn(`${label} published but not yet verified on relay`);
+    return ok;
+  }
+
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
       const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400 };
@@ -143,11 +153,7 @@ export default function DeliveryApp() {
       pendingLocal.current.set(id, d);
       setDeliveries(prev => [...prev.filter(r => r.id !== id), d]);
       resetForm(); setView('awaiting'); setLoading(false);
-      // Publish with retry in background
-      const ok = await pool.current.publishWithRetry(ev);
-      if (!ok) console.error('Failed to publish delivery to any relay');
-      // Give relay time to index, then refresh
-      await new Promise(r => setTimeout(r, 2000));
+      await publishAndVerify(ev, 'request');
       await loadData();
     } catch { setError('Failed to create request'); setLoading(false); }
   }
@@ -158,23 +164,18 @@ export default function DeliveryApp() {
       pendingLocal.current.set(editing.id, d);
       setDeliveries(prev => prev.map(r => r.id === editing.id ? d : r));
       setEditing(null); resetForm(); setView('awaiting'); setLoading(false);
-      const ok = await pool.current.publishWithRetry(ev);
-      if (!ok) console.error('Failed to publish update to any relay');
-      await new Promise(r => setTimeout(r, 2000));
+      await publishAndVerify(ev, 'update');
       await loadData();
     } catch { setError('Failed to update'); setLoading(false); }
   }
   async function placeBid(rid: string, amt: number) {
     try { setLoading(true); const bid: DeliveryBid = { id: genId(), courier: profile.npub, amount: amt, estimated_time: '1-2 hours', reputation: profile.reputation, completed_deliveries: profile.completed_deliveries, message: '', created_at: Math.floor(Date.now()/1000) };
       const ev = await signEvent(privHex, KIND_BID, JSON.stringify(bid), [['delivery_id',rid],['courier',profile.npub]]);
-      // Track locally so loadData merges it until relay confirms
       const existing = pendingBids.current.get(rid) || [];
       pendingBids.current.set(rid, [...existing, bid]);
       setDeliveries(prev => prev.map(r => r.id === rid ? { ...r, bids: [...r.bids, bid] } : r));
       setLoading(false);
-      const ok = await pool.current.publishWithRetry(ev);
-      if (!ok) console.error('Failed to publish bid to any relay');
-      await new Promise(r => setTimeout(r, 2000));
+      await publishAndVerify(ev, 'bid');
       await loadData();
     } catch { setError('Failed to place bid'); setLoading(false); }
   }

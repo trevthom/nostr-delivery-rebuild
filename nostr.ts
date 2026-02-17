@@ -1,11 +1,5 @@
-import * as secp256k1 from '@noble/secp256k1';
-import { hmac } from '@noble/hashes/hmac.js';
+import { schnorr } from '@noble/curves/secp256k1.js';
 import { sha256 as noble256 } from '@noble/hashes/sha2.js';
-
-// Configure secp256k1 HMAC for signing
-(secp256k1.utils as any).hmacSha256 = (key: Uint8Array, ...msgs: Uint8Array[]): Uint8Array =>
-  hmac(noble256, key, msgs.length === 1 ? msgs[0] : msgs.reduce((a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }));
-(secp256k1.utils as any).sha256 = (m: Uint8Array): Uint8Array => noble256(m);
 
 // ---- Hex/Bytes ----
 export const hexToBytes = (h: string): Uint8Array => {
@@ -63,9 +57,8 @@ export const isValidNsec = (s: string): boolean => s.startsWith('nsec1') && s.le
 
 export async function nsecToNpub(nsec: string): Promise<string> {
   const privHex = nsecToHex(nsec);
-  const pubBytes = secp256k1.getPublicKey(privHex, false);
-  const pubHex = bytesToHex(pubBytes instanceof Uint8Array ? pubBytes : new Uint8Array(pubBytes));
-  return hexToNpub(pubHex.substring(2, 66));
+  const pubHex = bytesToHex(schnorr.getPublicKey(hexToBytes(privHex)));
+  return hexToNpub(pubHex);
 }
 
 export function formatNpub(npub: string): string {
@@ -86,12 +79,10 @@ export interface NostrEvent {
 }
 
 export async function signEvent(privHex: string, kind: number, content: string, tags: string[][]): Promise<NostrEvent> {
-  const pubBytes = secp256k1.getPublicKey(privHex, false);
-  const pubHex = bytesToHex(pubBytes instanceof Uint8Array ? pubBytes : new Uint8Array(pubBytes)).substring(2, 66);
+  const pubHex = bytesToHex(schnorr.getPublicKey(hexToBytes(privHex)));
   const created_at = Math.floor(Date.now() / 1000);
   const id = await sha256(JSON.stringify([0, pubHex, created_at, kind, tags, content]));
-  const sigObj = await secp256k1.signAsync(hexToBytes(id), privHex);
-  const sig = bytesToHex(sigObj.toCompactRawBytes());
+  const sig = bytesToHex(schnorr.sign(hexToBytes(id), hexToBytes(privHex)));
   return { id, pubkey: pubHex, created_at, kind, tags, content, sig };
 }
 
@@ -102,21 +93,39 @@ export class RelayPool {
   private sockets: Map<string, WebSocket> = new Map();
   private pending: Map<string, { resolve: (events: NostrEvent[]) => void; events: NostrEvent[]; timer: ReturnType<typeof setTimeout>; eoseCount: number; totalRelays: number }> = new Map();
   private publishPending: Map<string, { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout>; accepted: boolean }> = new Map();
+  private relayUrls: string[] = DEFAULT_RELAYS;
   public connected = false;
 
   async connect(urls: string[] = DEFAULT_RELAYS): Promise<void> {
-    const promises = urls.map(url => new Promise<void>((res) => {
+    this.relayUrls = urls;
+    const promises = urls.map(url => this.connectOne(url));
+    await Promise.all(promises);
+    this.connected = this.sockets.size > 0;
+  }
+
+  private connectOne(url: string): Promise<void> {
+    return new Promise<void>((res) => {
       try {
+        if (this.sockets.has(url)) {
+          const ws = this.sockets.get(url)!;
+          if (ws.readyState === WebSocket.OPEN) { res(); return; }
+          this.sockets.delete(url);
+        }
         const ws = new WebSocket(url);
         ws.onopen = () => { this.sockets.set(url, ws); res(); };
         ws.onerror = () => res();
         ws.onclose = () => { this.sockets.delete(url); };
         ws.onmessage = (e) => this.handleMessage(e.data);
-        setTimeout(() => res(), 4000); // timeout
+        setTimeout(() => res(), 4000);
       } catch { res(); }
-    }));
-    await Promise.all(promises);
-    this.connected = this.sockets.size > 0;
+    });
+  }
+
+  private async ensureConnected(): Promise<void> {
+    const openCount = Array.from(this.sockets.values()).filter(ws => ws.readyState === WebSocket.OPEN).length;
+    if (openCount > 0) return;
+    console.warn('All relay connections lost, reconnecting...');
+    await this.connect(this.relayUrls);
   }
 
   private handleMessage(data: string) {
@@ -163,6 +172,7 @@ export class RelayPool {
   }
 
   async publish(event: NostrEvent): Promise<boolean> {
+    await this.ensureConnected();
     const msg = JSON.stringify(['EVENT', event]);
     const openSockets: WebSocket[] = [];
     this.sockets.forEach(ws => { if (ws.readyState === WebSocket.OPEN) openSockets.push(ws); });
@@ -175,6 +185,7 @@ export class RelayPool {
   }
 
   async query(filters: Record<string, any>, timeoutMs = 8000): Promise<NostrEvent[]> {
+    await this.ensureConnected();
     const subId = 'q' + Math.random().toString(36).substring(2, 10);
     const totalRelays = Array.from(this.sockets.values()).filter(ws => ws.readyState === WebSocket.OPEN).length;
     if (totalRelays === 0) return [];
