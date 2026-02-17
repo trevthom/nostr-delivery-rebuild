@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
-import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, type NostrEvent } from './nostr';
+import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, KIND_SETTINGS, encryptForSelf, decryptForSelf, type NostrEvent } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
-import type { View, DeliveryRequest, DeliveryBid, PackageInfo, PersonsInfo, ProofOfDelivery, UserProfile, FormState } from './types';
+import type { View, DeliveryRequest, DeliveryBid, PackageInfo, PersonsInfo, ProofOfDelivery, UserProfile, FormState, AppSettings } from './types';
 
 import CreateRequestTab from './tabs/CreateRequestTab';
 import AwaitingBidsTab from './tabs/AwaitingBidsTab';
@@ -27,6 +27,7 @@ export default function DeliveryApp() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<DeliveryRequest | null>(null);
   const [darkMode, setDarkMode] = useState(false);
+  const [nwcUrl, setNwcUrl] = useState('');
   const [nsecInput, setNsecInput] = useState('');
   const [privHex, setPrivHex] = useState('');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -70,6 +71,24 @@ export default function DeliveryApp() {
     try { const evs = await pool.current.query({ kinds: [KIND_PROFILE], '#d': [npub], limit: 10 }); if (evs.length > 0) { evs.sort((a, b) => b.created_at - a.created_at); return JSON.parse(evs[0].content); } } catch {}
     return { npub, reputation: 0, completed_deliveries: 0, verified_identity: false };
   }
+  async function publishSettings(hex: string, npub: string, settings: AppSettings) {
+    try {
+      const encrypted = await encryptForSelf(hex, JSON.stringify(settings));
+      const ev = await signEvent(hex, KIND_SETTINGS, encrypted, [['d', npub]]);
+      await pool.current.publish(ev);
+    } catch (e) { console.error('publish settings:', e); }
+  }
+  async function loadSettings(npub: string, hex: string): Promise<AppSettings | null> {
+    try {
+      const evs = await pool.current.query({ kinds: [KIND_SETTINGS], '#d': [npub], limit: 10 });
+      if (evs.length > 0) {
+        evs.sort((a, b) => b.created_at - a.created_at);
+        const decrypted = await decryptForSelf(hex, evs[0].content);
+        return JSON.parse(decrypted) as AppSettings;
+      }
+    } catch (e) { console.error('load settings:', e); }
+    return null;
+  }
   async function loadData() {
     try {
       setLoading(true);
@@ -102,10 +121,21 @@ export default function DeliveryApp() {
   async function handleLogin() {
     try { setLoading(true); setError(null); if (!isValidNsec(nsecInput.trim())) { setError('Invalid nsec format.'); setLoading(false); return; }
       const npub = await nsecToNpub(nsecInput.trim()); const hex = nsecToHex(nsecInput.trim()); setPrivHex(hex);
-      const p = await loadProfile(npub); setProfile({ ...p, npub, verified_identity: true }); setAuth(true); setShowLogin(false); setNsecInput('');
+      const p = await loadProfile(npub); setProfile({ ...p, npub, verified_identity: true });
+      const saved = await loadSettings(npub, hex);
+      if (saved) { setDarkMode(saved.darkMode); setNwcUrl(saved.nwcUrl || ''); }
+      setAuth(true); setShowLogin(false); setNsecInput('');
     } catch { setError('Failed to login.'); } finally { setLoading(false); }
   }
-  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); }
+  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); }
+  function handleDarkModeToggle() {
+    const next = !darkMode; setDarkMode(next);
+    if (privHex && profile.npub) publishSettings(privHex, profile.npub, { darkMode: next, nwcUrl });
+  }
+  function handleNwcUrlChange(url: string) {
+    setNwcUrl(url);
+    if (privHex && profile.npub) publishSettings(privHex, profile.npub, { darkMode, nwcUrl: url });
+  }
 
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
@@ -246,9 +276,9 @@ export default function DeliveryApp() {
         <h2 className={`text-xl font-bold mb-6 ${txt}`}>Settings</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div className={`p-4 ${sec} rounded-lg`}><div className="flex items-center justify-between mb-2"><h3 className={`font-semibold ${txt}`}>Dark Mode</h3>
-            <button onClick={()=>setDarkMode(!dm)} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
+            <button onClick={handleDarkModeToggle} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
             <p className={`text-sm ${dm?'text-gray-300':'text-gray-600'}`}>Switch theme</p></div>
-          <NWCWallet darkMode={darkMode} />
+          <NWCWallet darkMode={darkMode} savedNwcUrl={nwcUrl} onNwcUrlChange={handleNwcUrlChange} />
         </div>
         <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
