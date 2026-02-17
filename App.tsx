@@ -110,32 +110,45 @@ export default function DeliveryApp() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
       const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400 };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',id],['sender',profile.npub],['status','open']]); await pool.current.publish(ev);
-      alert('Request created!'); resetForm(); await loadData(); setView('awaiting');
+      // Optimistically add to local state so it appears immediately
+      setDeliveries(prev => [...prev.filter(r => r.id !== id), d]);
+      resetForm(); setView('awaiting');
+      // Background refresh from relays
+      loadData();
     } catch { setError('Failed to create request'); } finally { setLoading(false); }
   }
   async function updateDel() {
     if (!editing) return; try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
       const d: DeliveryRequest = { ...editing, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg?form.packages:[], persons: isPerson?form.persons:undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',editing.id],['sender',profile.npub],['status','open']]); await pool.current.publish(ev);
-      alert('Updated!'); setEditing(null); resetForm(); await loadData(); setView('awaiting');
+      // Optimistically update in local state
+      setDeliveries(prev => prev.map(r => r.id === editing.id ? d : r));
+      setEditing(null); resetForm(); setView('awaiting');
+      loadData();
     } catch { setError('Failed to update'); } finally { setLoading(false); }
   }
   async function placeBid(rid: string, amt: number) {
     try { setLoading(true); const bid: DeliveryBid = { id: genId(), courier: profile.npub, amount: amt, estimated_time: '1-2 hours', reputation: profile.reputation, completed_deliveries: profile.completed_deliveries, message: '', created_at: Math.floor(Date.now()/1000) };
       const ev = await signEvent(privHex, KIND_BID, JSON.stringify(bid), [['delivery_id',rid],['courier',profile.npub]]); await pool.current.publish(ev);
-      alert('Bid placed!'); await loadData(); setView('active');
+      // Optimistically add bid to local state
+      setDeliveries(prev => prev.map(r => r.id === rid ? { ...r, bids: [...r.bids, bid] } : r));
+      loadData();
     } catch { setError('Failed to place bid'); } finally { setLoading(false); }
   }
   async function acceptBid(req: DeliveryRequest, bi: number) {
     try { setLoading(true); const bid = req.bids[bi]; const upd = { status: 'accepted', accepted_bid: bid.id, timestamp: Math.floor(Date.now()/1000) };
       const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',req.id],['status','accepted']]); await pool.current.publish(ev);
-      setSeenBids(p=>({...p,[req.id]:true})); alert('Bid accepted!'); await loadData(); setView('transport');
+      setSeenBids(p=>({...p,[req.id]:true}));
+      setDeliveries(prev => prev.map(r => r.id === req.id ? { ...r, status: 'accepted', accepted_bid: bid.id } : r));
+      setView('transport');
+      loadData();
     } catch { setError('Failed to accept bid'); } finally { setLoading(false); }
   }
   async function deleteDel(id: string) {
     if (!confirm('Delete this request?')) return; try { setLoading(true);
       const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',id],['status','expired']]); await pool.current.publish(ev);
-      alert('Deleted!'); await loadData();
+      setDeliveries(prev => prev.map(r => r.id === id ? { ...r, status: 'expired' } : r));
+      loadData();
     } catch { setError('Failed to delete'); } finally { setLoading(false); }
   }
   async function cancelJob(id: string) {
