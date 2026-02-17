@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
-import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, KIND_SETTINGS, encryptForSelf, decryptForSelf, type NostrEvent } from './nostr';
+import { RelayPool, signEvent, nsecToNpub, nsecToHex, npubToHex, isValidNsec, formatNpub, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE, KIND_SETTINGS, encryptForSelf, decryptForSelf, type NostrEvent } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
 import type { View, DeliveryRequest, DeliveryBid, PackageInfo, PersonsInfo, ProofOfDelivery, UserProfile, FormState, AppSettings } from './types';
@@ -65,28 +65,48 @@ export default function DeliveryApp() {
   useEffect(() => { if (prevSettings.current && !showSettings && auth && privHex) publishProfile(profile); prevSettings.current = showSettings; }, [showSettings]);
 
   async function publishProfile(p: UserProfile) {
-    try { const ev = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]); await pool.current.publish(ev); } catch (e) { console.error('publish profile:', e); }
+    try {
+      const ev = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]);
+      const ok = await pool.current.publish(ev);
+      if (!ok) {
+        console.warn('Profile publish not confirmed, retrying...');
+        const ev2 = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]);
+        await pool.current.publish(ev2);
+      }
+    } catch (e) { console.error('publish profile:', e); }
   }
   async function loadProfile(npub: string): Promise<UserProfile> {
-    try { const evs = await pool.current.query({ kinds: [KIND_PROFILE], '#d': [npub], limit: 10 }); if (evs.length > 0) { evs.sort((a, b) => b.created_at - a.created_at); return JSON.parse(evs[0].content); } } catch {}
+    try {
+      const pubHex = npubToHex(npub);
+      const evs = await pool.current.query({ kinds: [KIND_PROFILE], '#d': [npub], authors: [pubHex], limit: 10 });
+      if (evs.length > 0) { evs.sort((a, b) => b.created_at - a.created_at); return JSON.parse(evs[0].content); }
+    } catch {}
     return { npub, reputation: 0, completed_deliveries: 0, verified_identity: false };
   }
   async function publishSettings(hex: string, npub: string, settings: AppSettings) {
-    try {
-      const encrypted = await encryptForSelf(hex, JSON.stringify(settings));
-      const ev = await signEvent(hex, KIND_SETTINGS, encrypted, [['d', npub]]);
-      await pool.current.publish(ev);
-    } catch (e) { console.error('publish settings:', e); }
+    const encrypted = await encryptForSelf(hex, JSON.stringify(settings));
+    const ev = await signEvent(hex, KIND_SETTINGS, encrypted, [['d', npub]]);
+    const ok = await pool.current.publish(ev);
+    if (!ok) {
+      console.warn('Settings publish not confirmed by relays, retrying...');
+      const ev2 = await signEvent(hex, KIND_SETTINGS, encrypted, [['d', npub]]);
+      const ok2 = await pool.current.publish(ev2);
+      if (!ok2) console.error('Settings publish retry also failed');
+    }
   }
   async function loadSettings(npub: string, hex: string): Promise<AppSettings | null> {
-    try {
-      const evs = await pool.current.query({ kinds: [KIND_SETTINGS], '#d': [npub], limit: 10 });
-      if (evs.length > 0) {
-        evs.sort((a, b) => b.created_at - a.created_at);
-        const decrypted = await decryptForSelf(hex, evs[0].content);
-        return JSON.parse(decrypted) as AppSettings;
-      }
-    } catch (e) { console.error('load settings:', e); }
+    const pubHex = npubToHex(npub);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const evs = await pool.current.query({ kinds: [KIND_SETTINGS], '#d': [npub], authors: [pubHex], limit: 10 });
+        if (evs.length > 0) {
+          evs.sort((a, b) => b.created_at - a.created_at);
+          const decrypted = await decryptForSelf(hex, evs[0].content);
+          return JSON.parse(decrypted) as AppSettings;
+        }
+      } catch (e) { console.error('load settings attempt', attempt + 1, ':', e); }
+      if (attempt === 0) await new Promise(r => setTimeout(r, 1500));
+    }
     return null;
   }
   async function loadData() {
