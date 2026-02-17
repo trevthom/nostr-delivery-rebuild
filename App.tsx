@@ -26,7 +26,7 @@ export default function DeliveryApp() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<DeliveryRequest | null>(null);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('nostr_delivery_dark_mode') === 'true');
   const [nsecInput, setNsecInput] = useState('');
   const [privHex, setPrivHex] = useState('');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -62,6 +62,7 @@ export default function DeliveryApp() {
   }, [showSettings]);
   const prevSettings = useRef(showSettings);
   useEffect(() => { if (prevSettings.current && !showSettings && auth && privHex) publishProfile(profile); prevSettings.current = showSettings; }, [showSettings]);
+  useEffect(() => { localStorage.setItem('nostr_delivery_dark_mode', String(darkMode)); }, [darkMode]);
 
   async function publishProfile(p: UserProfile) {
     try { const ev = await signEvent(privHex, KIND_PROFILE, JSON.stringify(p), [['d', p.npub]]); await pool.current.publish(ev); } catch (e) { console.error('publish profile:', e); }
