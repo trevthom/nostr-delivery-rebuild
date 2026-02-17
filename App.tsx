@@ -3,7 +3,7 @@ import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
 import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
-import type { View, DeliveryRequest, DeliveryBid, ProofOfDelivery, UserProfile, FormState } from './types';
+import type { View, DeliveryRequest, DeliveryBid, ProofOfDelivery, UserProfile, FormState, AppSettings } from './types';
 import { publishProfile, loadProfile, publishSettings, loadSettings } from './nostrService';
 import { aggregateDeliveries, computeNotifications, filterDeliveryLists } from './utils';
 
@@ -70,7 +70,7 @@ export default function DeliveryApp() {
 
   const doPublishProfile = (p: UserProfile) => publishProfile(pool.current, privHex, p);
   const doLoadProfile = (npub: string) => loadProfile(pool.current, npub);
-  const doPublishSettings = (hex: string, npub: string, settings: { darkMode: boolean; nwcUrl: string }) => publishSettings(pool.current, hex, npub, settings);
+  const doPublishSettings = (hex: string, npub: string, settings: AppSettings) => publishSettings(pool.current, hex, npub, settings);
   const doLoadSettings = (npub: string, hex: string) => loadSettings(pool.current, npub, hex);
   async function loadData() {
     try {
@@ -121,18 +121,35 @@ export default function DeliveryApp() {
       const npub = await nsecToNpub(nsecInput.trim()); const hex = nsecToHex(nsecInput.trim()); setPrivHex(hex);
       const p = await doLoadProfile(npub); setProfile({ ...p, npub, verified_identity: true });
       const saved = await doLoadSettings(npub, hex);
-      if (saved) { setDarkMode(saved.darkMode); setNwcUrl(saved.nwcUrl || ''); }
+      if (saved) {
+        setDarkMode(saved.darkMode);
+        setNwcUrl(saved.nwcUrl || '');
+        if (saved.displayName) setProfile(prev => ({ ...prev, display_name: prev.display_name || saved.displayName }));
+      }
       setAuth(true); setShowLogin(false); setNsecInput('');
     } catch { setError('Failed to login.'); } finally { setLoading(false); }
   }
-  function handleLogout() { setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); }
+  function handleLogout() {
+    // Save current settings and profile before clearing state
+    if (privHex && profile.npub) {
+      doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
+      doPublishProfile(profile);
+    }
+    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear();
+  }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
-    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode: next, nwcUrl });
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode: next, nwcUrl, displayName: profile.display_name || '' });
   }
   function handleNwcUrlChange(url: string) {
     setNwcUrl(url);
-    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl: url });
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl: url, displayName: profile.display_name || '' });
+  }
+  function handleUsernameBlur() {
+    if (privHex && profile.npub) {
+      doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
+      doPublishProfile(profile);
+    }
   }
 
   async function publishAndVerify(ev: ReturnType<typeof signEvent> extends Promise<infer T> ? T : never, label: string): Promise<boolean> {
@@ -298,10 +315,10 @@ export default function DeliveryApp() {
         <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
           <div className={`p-4 ${dm?'bg-purple-900':'bg-purple-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Username</p>
-            <input type="text" value={profile.display_name||''} onChange={e=>setProfile({...profile,display_name:e.target.value})} placeholder="Optional" spellCheck={false} className={`w-full text-sm font-medium ${dm?'bg-purple-800 text-purple-300 placeholder-purple-500':'bg-white text-purple-600 placeholder-purple-400'} border ${dm?'border-purple-700':'border-purple-300'} rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500`}/></div>
+            <input type="text" value={profile.display_name||''} onChange={e=>setProfile({...profile,display_name:e.target.value})} onBlur={handleUsernameBlur} placeholder="Optional" spellCheck={false} className={`w-full text-sm font-medium ${dm?'bg-purple-800 text-purple-300 placeholder-purple-500':'bg-white text-purple-600 placeholder-purple-400'} border ${dm?'border-purple-700':'border-purple-300'} rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500`}/></div>
+          <div className={`p-4 ${dm?'bg-blue-900':'bg-blue-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>ID</p><p className={`text-xs font-mono ${dm?'text-blue-400':'text-blue-600'} truncate`}>{profile.display_name?`${profile.display_name} (${profile.npub})`:profile.npub}</p></div>
           <div className={`p-4 ${dm?'bg-orange-900':'bg-orange-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Reputation</p><p className={`text-2xl font-bold ${dm?'text-orange-400':'text-orange-600'}`}>{profile.completed_deliveries===0?'N/A':`${profile.reputation.toFixed(1)} ⭐`}</p></div>
           <div className={`p-4 ${dm?'bg-green-900':'bg-green-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Deliveries Completed</p><p className={`text-2xl font-bold ${dm?'text-green-400':'text-green-600'}`}>{profile.completed_deliveries}</p></div>
-          <div className={`p-4 ${dm?'bg-blue-900':'bg-blue-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>ID</p><p className={`text-xs font-mono ${dm?'text-blue-400':'text-blue-600'} truncate`}>{profile.display_name?`${profile.display_name} (${profile.npub})`:profile.npub}</p></div>
         </div>
       </div></div>}
 

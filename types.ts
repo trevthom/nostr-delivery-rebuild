@@ -11,7 +11,7 @@ export interface DeliveryRequest {
   proof_of_delivery?: ProofOfDelivery; sender_feedback?: string; sender_rating?: number; completed_at?: number;
 }
 export interface UserProfile { npub: string; display_name?: string; reputation: number; completed_deliveries: number; verified_identity: boolean; }
-export interface AppSettings { darkMode: boolean; nwcUrl: string; }
+export interface AppSettings { darkMode: boolean; nwcUrl: string; displayName?: string; }
 export enum Mode { SENDER='sender', COURIER='courier' }
 export type View = 'create' | 'awaiting' | 'pending' | 'transport' | 'done' | 'browse' | 'active' | 'completed';
 
