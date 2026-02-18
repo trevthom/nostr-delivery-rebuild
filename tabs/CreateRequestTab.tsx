@@ -13,13 +13,15 @@ interface Props {
   setIsPkg: (v: boolean) => void;
   isPerson: boolean;
   setIsPerson: (v: boolean) => void;
+  autoApprove: boolean;
+  setAutoApprove: (v: boolean) => void;
   loading: boolean;
   resetForm: () => void;
   onCreate: () => void;
   onUpdate: () => void;
 }
 
-export default function CreateRequestTab({ darkMode, editing, setEditing, form, setForm, isPkg, setIsPkg, isPerson, setIsPerson, loading, resetForm, onCreate, onUpdate }: Props) {
+export default function CreateRequestTab({ darkMode, editing, setEditing, form, setForm, isPkg, setIsPkg, isPerson, setIsPerson, autoApprove, setAutoApprove, loading, resetForm, onCreate, onUpdate }: Props) {
   const { dm, inp, card, txt, sec } = getStyles(darkMode);
   const uPkg = (i: number, u: Partial<PackageInfo>) => { const p = [...form.packages]; p[i] = { ...p[i], ...u }; setForm({ ...form, packages: p }); };
 
@@ -53,6 +55,12 @@ export default function CreateRequestTab({ darkMode, editing, setEditing, form, 
           {form.timeWindow === 'custom' && <input type="date" value={form.customDate} onChange={e => setForm({ ...form, customDate: e.target.value })} className={`${inp} mt-2`} />}</div>
         <div><label className={`block text-sm font-medium ${dm ? 'text-gray-300' : 'text-gray-700'} mb-2`}>Offer Amount (sats) *</label><div className="relative"><Bitcoin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-orange-500" />
           <input type="number" value={form.offer} onChange={e => setForm({ ...form, offer: e.target.value })} placeholder="25000" className={`w-full pl-12 pr-4 py-3 border ${dm ? 'border-gray-600 bg-gray-700 text-white placeholder-gray-400' : 'border-gray-300 bg-white'} rounded-lg focus:ring-2 focus:ring-orange-500`} /></div></div>
+        <div className={`p-4 ${sec} rounded-lg`}>
+          <label className={`flex items-center gap-3 ${dm ? 'text-gray-300' : 'text-gray-700'} cursor-pointer`}>
+            <input type="checkbox" checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} className="rounded w-5 h-5" />
+            <div><span className="font-medium">Auto-approve matching bids</span><p className={`text-sm ${dm ? 'text-gray-400' : 'text-gray-500'} mt-1`}>Automatically approve bids that accept your offer amount (non-counteroffers). The job will skip "Bids Pending Approval" and move directly to "In Transport".</p></div>
+          </label>
+        </div>
         <button onClick={editing ? onUpdate : onCreate} disabled={loading} className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-medium py-4 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
           {loading ? 'Processing...' : <><Package className="w-5 h-5" />{editing ? 'Update Request' : 'Create Request'}</>}</button>
       </div>

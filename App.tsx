@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Package, Key, Settings, LogOut, Bell } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Package, Key, Settings, LogOut, Bell, Bitcoin } from 'lucide-react';
 import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
@@ -45,7 +45,9 @@ export default function DeliveryApp() {
   const [rating, setRating] = useState(0);
   const [isPkg, setIsPkg] = useState(false);
   const [isPerson, setIsPerson] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(false);
   const [relayConnected, setRelayConnected] = useState(false);
+  const [btcPrice, setBtcPrice] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({
     pickupAddr: '', pickupInst: '', dropoffAddr: '', dropoffInst: '',
     packages: [{ size: PkgSize.SMALL, description: '', fragile: false, requires_signature: false }],
@@ -55,10 +57,23 @@ export default function DeliveryApp() {
   const pool = useRef<RelayPool>(new RelayPool());
   const pendingLocal = useRef<Map<string, DeliveryRequest>>(new Map());
   const pendingBids = useRef<Map<string, DeliveryBid[]>>(new Map());
+  const pendingDeletes = useRef<Set<string>>(new Set());
+  const autoApprovedIds = useRef<Set<string>>(new Set());
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { pool.current.connect().then(() => { setRelayConnected(pool.current.connected); console.log('Relays connected:', pool.current.connected); }); }, []);
+  useEffect(() => {
+    const fetchBtcPrice = () => {
+      fetch('https://api.coinbase.com/v2/prices/spot?currency=USD')
+        .then(r => r.json())
+        .then(data => { if (data?.data?.amount) setBtcPrice(parseFloat(data.data.amount).toLocaleString('en-US', { maximumFractionDigits: 0 })); })
+        .catch(() => {});
+    };
+    fetchBtcPrice();
+    const interval = setInterval(fetchBtcPrice, 60000);
+    return () => clearInterval(interval);
+  }, []);
   useEffect(() => { if (auth) loadData(); }, [auth, mode]);
   useEffect(() => {
     if (!showSettings) return;
@@ -91,6 +106,17 @@ export default function DeliveryApp() {
           res.push(d);
         }
       }
+      // Apply pending deletions
+      for (const id of pendingDeletes.current) {
+        const req = res.find(r => r.id === id);
+        if (req) {
+          if (req.status === 'expired') {
+            pendingDeletes.current.delete(id);
+          } else {
+            req.status = 'expired';
+          }
+        }
+      }
       // Merge pending local bids
       for (const [rid, bids] of pendingBids.current) {
         const req = res.find(r => r.id === rid);
@@ -107,6 +133,17 @@ export default function DeliveryApp() {
       }
 
       setDeliveries(res);
+
+      // Auto-approve: accept first matching bid on auto-approve requests
+      const toAutoApprove = res.filter(r => r.sender === profile.npub && r.status === 'open' && r.auto_approve && r.bids.length > 0 && !autoApprovedIds.current.has(r.id));
+      for (const req of toAutoApprove) {
+        const matchIdx = req.bids.findIndex(b => b.amount === req.offer_amount);
+        if (matchIdx >= 0) {
+          autoApprovedIds.current.add(req.id);
+          acceptBid(req, matchIdx);
+        }
+      }
+
       const act = res.find(r => (r.status==='accepted'||r.status==='intransit'||r.status==='completed') && r.bids.some(b => b.courier===profile.npub && r.accepted_bid===b.id));
       setActiveDelivery(act || null);
       const nps = new Set<string>(); res.filter(r => (r.status==='confirmed'||r.status==='completed') && r.accepted_bid).forEach(d => { const cb = d.bids.find(b => b.id===d.accepted_bid); if (cb) nps.add(cb.courier); });
@@ -135,7 +172,7 @@ export default function DeliveryApp() {
       doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
       doPublishProfile(profile);
     }
-    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear();
+    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear();
   }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
@@ -164,7 +201,7 @@ export default function DeliveryApp() {
 
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
-      const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400 };
+      const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400, auto_approve: autoApprove||undefined };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',id],['sender',profile.npub],['status','open']]);
       // Track locally so loadData merges it until relay confirms
       pendingLocal.current.set(id, d);
@@ -176,7 +213,7 @@ export default function DeliveryApp() {
   }
   async function updateDel() {
     if (!editing) return; try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
-      const d: DeliveryRequest = { ...editing, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg?form.packages:[], persons: isPerson?form.persons:undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow };
+      const d: DeliveryRequest = { ...editing, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg?form.packages:[], persons: isPerson?form.persons:undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, auto_approve: autoApprove||undefined };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',editing.id],['sender',profile.npub],['status','open']]);
       pendingLocal.current.set(editing.id, d);
       setDeliveries(prev => prev.map(r => r.id === editing.id ? d : r));
@@ -207,10 +244,13 @@ export default function DeliveryApp() {
   }
   async function deleteDel(id: string) {
     if (!confirm('Delete this request?')) return; try { setLoading(true);
-      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',id],['status','expired']]); await pool.current.publish(ev);
+      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',id],['status','expired']]);
+      pendingDeletes.current.add(id);
       setDeliveries(prev => prev.map(r => r.id === id ? { ...r, status: 'expired' } : r));
-      loadData();
-    } catch { setError('Failed to delete'); } finally { setLoading(false); }
+      setLoading(false);
+      await publishAndVerify(ev, 'delete');
+      await loadData();
+    } catch { setError('Failed to delete'); setLoading(false); }
   }
   async function cancelJob(id: string) {
     const d = deliveries.find(r=>r.id===id); if (!d) return; const ab = d.bids.find(b=>b.id===d.accepted_bid); const amt = ab?.amount||d.offer_amount;
@@ -221,7 +261,8 @@ export default function DeliveryApp() {
     if (!activeDelivery) return; if (activeDelivery.packages.some(p=>p.requires_signature) && !sigName.trim()) { setError('Signature required'); return; }
     try { setLoading(true); const pod: ProofOfDelivery = { images: proofImages, signature_name: sigName.trim()||undefined, timestamp: Math.floor(Date.now()/1000), comments: delComments.trim()||undefined };
       const upd = { status: 'completed', proof_of_delivery: pod, completed_at: Math.floor(Date.now()/1000), accepted_bid: activeDelivery.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
-      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',activeDelivery.id],['status','completed']]); await pool.current.publish(ev);
+      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',activeDelivery.id],['status','completed']]);
+      await publishAndVerify(ev, 'completion');
       alert('Completed! Awaiting confirmation.'); setProofImages([]); setSigName(''); setDelComments(''); setShowCompForm(false); await loadData();
     } catch { setError('Failed to complete'); } finally { setLoading(false); }
   }
@@ -232,7 +273,8 @@ export default function DeliveryApp() {
         const up: UserProfile = { ...cp, reputation: Math.min(5,Math.max(0,nr)), completed_deliveries: cp.completed_deliveries+1, verified_identity: true };
         const pe = await signEvent(privHex, KIND_PROFILE, JSON.stringify(up), [['d',cb.courier]]); await pool.current.publish(pe); }
       const upd = { status: 'confirmed', sender_rating: rating, sender_feedback: feedback.trim()||undefined, completed_at: d.completed_at||Math.floor(Date.now()/1000), accepted_bid: d.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
-      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',d.id],['status','confirmed']]); await pool.current.publish(ev);
+      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',d.id],['status','confirmed']]);
+      await publishAndVerify(ev, 'confirmation');
       alert('Confirmed!'); setFeedback(''); setRating(0); await loadData();
     } catch { setError('Failed to confirm'); } finally { setLoading(false); }
   }
@@ -242,9 +284,9 @@ export default function DeliveryApp() {
       packages: d.packages.length?d.packages:[{size:PkgSize.SMALL,description:'',fragile:false,requires_signature:false}],
       persons: d.persons||{adults:1,children:0,carSeatRequested:false,luggage:{hasLuggage:false,dimensions:'',weight:''}},
       offer: d.offer_amount.toString(), insurance: d.insurance_amount?.toString()||'', timeWindow: d.time_window, customDate: '' });
-    setIsPkg(d.packages.length>0); setIsPerson(!!d.persons&&(d.persons.adults>0||d.persons.children>0)); setView('create');
+    setIsPkg(d.packages.length>0); setIsPerson(!!d.persons&&(d.persons.adults>0||d.persons.children>0)); setAutoApprove(!!d.auto_approve); setView('create');
   }
-  function resetForm() { setForm({ pickupAddr:'',pickupInst:'',dropoffAddr:'',dropoffInst:'',packages:[{size:PkgSize.SMALL,description:'',fragile:false,requires_signature:false}],persons:{adults:1,children:0,carSeatRequested:false,luggage:{hasLuggage:false,dimensions:'',weight:''}},offer:'',insurance:'',timeWindow:'asap',customDate:'' }); setIsPkg(false); setIsPerson(false); }
+  function resetForm() { setForm({ pickupAddr:'',pickupInst:'',dropoffAddr:'',dropoffInst:'',packages:[{size:PkgSize.SMALL,description:'',fragile:false,requires_signature:false}],persons:{adults:1,children:0,carSeatRequested:false,luggage:{hasLuggage:false,dimensions:'',weight:''}},offer:'',insurance:'',timeWindow:'asap',customDate:'' }); setIsPkg(false); setIsPerson(false); setAutoApprove(false); }
   const handleImg = (e:React.ChangeEvent<HTMLInputElement>) => { if (!e.target.files) return; Array.from(e.target.files).forEach(f => { const r=new FileReader(); r.onloadend=()=>setProofImages(p=>[...p,r.result as string]); r.readAsDataURL(f); }); };
 
   const { dm, bg, inp, card, sub, txt, sec } = getStyles(darkMode);
@@ -274,6 +316,12 @@ export default function DeliveryApp() {
   // Filtered delivery lists
   const { awaitingBids, bidsPending, inTransport, completedReqs, browseJobs, completedTransports } = filterDeliveryLists(deliveries, profile.npub);
 
+  // Total sats earned from completed transports
+  const totalSatsEarned = completedTransports.reduce((sum, d) => {
+    const ab = d.bids.find(b => b.id === d.accepted_bid);
+    return sum + (ab ? ab.amount : d.offer_amount);
+  }, 0);
+
   // Tab button helper
   const tabBtn = (v: View, label: string, badge?: number) => (
     <button onClick={() => { setView(v); loadData(); }} className={`px-6 py-3 font-medium transition-colors whitespace-nowrap ${view === v ? 'border-b-2 border-orange-500 text-orange-600' : dm ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}>
@@ -287,6 +335,7 @@ export default function DeliveryApp() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-3"><Package className="w-8 h-8 text-orange-500" /><div><h1 className={`text-xl font-bold ${txt}`}>Nostr Delivery</h1><p className={`text-xs ${sub}`}>{profile.display_name?`${profile.display_name} (${profile.npub})`:profile.npub}</p></div></div>
+            {btcPrice && <div className="flex items-center gap-2"><Bitcoin className="w-5 h-5 text-orange-500" /><span className={`text-lg font-bold ${dm ? 'text-orange-400' : 'text-orange-600'}`}>${btcPrice}</span></div>}
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2"><span className={`text-sm font-medium ${dm?'text-gray-300':'text-gray-700'}`}>CONTEXT:</span>
                 <select value={mode} onChange={e=>{setMode(e.target.value as Mode);setView(e.target.value===Mode.SENDER?'create':'browse');loadData();}} className={`px-3 py-2 border ${dm?'border-gray-600 bg-gray-700 text-white':'border-gray-300 bg-white'} rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-orange-500`}>
@@ -317,7 +366,7 @@ export default function DeliveryApp() {
           <div className={`p-4 ${dm?'bg-purple-900':'bg-purple-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Username</p>
             <input type="text" value={profile.display_name||''} onChange={e=>setProfile({...profile,display_name:e.target.value})} onBlur={handleUsernameBlur} placeholder="Optional" spellCheck={false} className={`w-full text-sm font-medium ${dm?'bg-purple-800 text-purple-300 placeholder-purple-500':'bg-white text-purple-600 placeholder-purple-400'} border ${dm?'border-purple-700':'border-purple-300'} rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500`}/></div>
           <div className={`p-4 ${dm?'bg-orange-900':'bg-orange-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Reputation</p><p className={`text-2xl font-bold ${dm?'text-orange-400':'text-orange-600'}`}>{profile.completed_deliveries===0?'N/A':`${profile.reputation.toFixed(1)} ⭐`}</p></div>
-          <div className={`p-4 ${dm?'bg-green-900':'bg-green-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Deliveries Completed</p><p className={`text-2xl font-bold ${dm?'text-green-400':'text-green-600'}`}>{profile.completed_deliveries}</p></div>
+          <div className={`p-4 ${dm?'bg-green-900':'bg-green-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Total Sats Earned</p><p className={`text-2xl font-bold ${dm?'text-green-400':'text-green-600'}`}>{totalSatsEarned.toLocaleString()} sats</p></div>
         </div>
       </div></div>}
 
@@ -340,7 +389,7 @@ export default function DeliveryApp() {
       {/* Tab Content */}
       <div className="max-w-7xl mx-auto px-4 pb-8">
         {/* Sender Tabs */}
-        {view==='create'&&mode===Mode.SENDER&&<CreateRequestTab darkMode={darkMode} editing={editing} setEditing={setEditing} form={form} setForm={setForm} isPkg={isPkg} setIsPkg={setIsPkg} isPerson={isPerson} setIsPerson={setIsPerson} loading={loading} resetForm={resetForm} onCreate={createDel} onUpdate={updateDel} />}
+        {view==='create'&&mode===Mode.SENDER&&<CreateRequestTab darkMode={darkMode} editing={editing} setEditing={setEditing} form={form} setForm={setForm} isPkg={isPkg} setIsPkg={setIsPkg} isPerson={isPerson} setIsPerson={setIsPerson} autoApprove={autoApprove} setAutoApprove={setAutoApprove} loading={loading} resetForm={resetForm} onCreate={createDel} onUpdate={updateDel} />}
         {view==='awaiting'&&mode===Mode.SENDER&&<AwaitingBidsTab darkMode={darkMode} deliveries={awaitingBids} loading={loading} onEdit={startEdit} onDelete={deleteDel} />}
         {view==='pending'&&mode===Mode.SENDER&&<BidsPendingTab darkMode={darkMode} deliveries={bidsPending} loading={loading} seenBids={seenBids} setSeenBids={setSeenBids} onAcceptBid={acceptBid} onEdit={startEdit} onDelete={deleteDel} />}
         {view==='transport'&&mode===Mode.SENDER&&<InTransportTab darkMode={darkMode} deliveries={inTransport} loading={loading} onCancel={cancelJob} />}

@@ -18,7 +18,7 @@ export default function CompletedTransportsTab({ darkMode, deliveries, loading, 
 
   return (
     <div>
-      <h2 className={`text-2xl font-bold mb-4 ${txt}`}>Completed Transports</h2>
+      <h2 className={`text-2xl font-bold mb-4 ${txt}`}>Completed Transports ({deliveries.length})</h2>
       {loading ? <div className={`${card} text-center`}><p className={sub}>Loading...</p></div>
       : deliveries.length === 0
         ? <div className={`${card} text-center`}><CheckCircle className={`w-16 h-16 ${dm ? 'text-gray-600' : 'text-gray-300'} mx-auto mb-4`} /><p className={sub}>No completed transports yet.</p></div>

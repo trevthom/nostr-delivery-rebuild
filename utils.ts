@@ -21,8 +21,11 @@ export function aggregateDeliveries(
   stEvs: NostrEvent[]
 ): DeliveryRequest[] {
   const dMap = new Map<string, DeliveryRequest>();
+  const seenDeliveryEvIds = new Set<string>();
   for (const ev of devEvs) {
     try {
+      if (seenDeliveryEvIds.has(ev.id)) continue;
+      seenDeliveryEvIds.add(ev.id);
       const d = JSON.parse(ev.content) as DeliveryRequest;
       const ex = dMap.get(d.id);
       if (!ex || ev.created_at > (ex.created_at || 0)) dMap.set(d.id, d);
@@ -30,11 +33,13 @@ export function aggregateDeliveries(
   }
 
   const bMap = new Map<string, DeliveryBid[]>();
+  const seenBidIds = new Set<string>();
   for (const ev of bidEvs) {
     try {
       const b = JSON.parse(ev.content) as DeliveryBid;
       const did = ev.tags.find(t => t[0] === 'delivery_id')?.[1];
-      if (did) {
+      if (did && !seenBidIds.has(b.id)) {
+        seenBidIds.add(b.id);
         if (!bMap.has(did)) bMap.set(did, []);
         bMap.get(did)!.push(b);
       }
@@ -42,8 +47,11 @@ export function aggregateDeliveries(
   }
 
   const sMap = new Map<string, any[]>();
+  const seenStatusIds = new Set<string>();
   for (const ev of stEvs) {
     try {
+      if (seenStatusIds.has(ev.id)) continue;
+      seenStatusIds.add(ev.id);
       const u = JSON.parse(ev.content);
       const did = ev.tags.find(t => t[0] === 'delivery_id')?.[1];
       if (did) {
@@ -59,7 +67,8 @@ export function aggregateDeliveries(
     d.bids = bMap.get(id) || [];
     d.bids.sort((a, b) => a.created_at - b.created_at);
     const ups = sMap.get(id) || [];
-    ups.sort((a, b) => (a._ts || 0) - (b._ts || 0));
+    const statusOrder: Record<string, number> = { open: 0, expired: 1, accepted: 2, intransit: 3, completed: 4, confirmed: 5 };
+    ups.sort((a, b) => (a._ts || 0) - (b._ts || 0) || (statusOrder[a.status] || 0) - (statusOrder[b.status] || 0));
     if (ups.length > 0) {
       const l = ups[ups.length - 1];
       if (l.status) d.status = l.status;

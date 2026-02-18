@@ -9,6 +9,7 @@ export interface DeliveryRequest {
   persons?: PersonsInfo; offer_amount: number; insurance_amount?: number; time_window: string;
   expires_at?: number; status: string; bids: DeliveryBid[]; accepted_bid?: string; created_at: number;
   proof_of_delivery?: ProofOfDelivery; sender_feedback?: string; sender_rating?: number; completed_at?: number;
+  auto_approve?: boolean;
 }
 export interface UserProfile { npub: string; display_name?: string; reputation: number; completed_deliveries: number; verified_identity: boolean; }
 export interface AppSettings { darkMode: boolean; nwcUrl: string; displayName?: string; }
