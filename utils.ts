@@ -79,14 +79,15 @@ export function aggregateDeliveries(
     const ups = sMap.get(id) || [];
     const statusOrder: Record<string, number> = { open: 0, expired: 1, accepted: 2, intransit: 3, completed: 4, confirmed: 5 };
     ups.sort((a, b) => (a._ts || 0) - (b._ts || 0) || (statusOrder[a.status] || 0) - (statusOrder[b.status] || 0));
-    if (ups.length > 0) {
-      const l = ups[ups.length - 1];
-      if (l.status) d.status = l.status;
-      if (l.proof_of_delivery) d.proof_of_delivery = l.proof_of_delivery;
-      if (l.completed_at) d.completed_at = l.completed_at;
-      if (l.accepted_bid) d.accepted_bid = l.accepted_bid;
-      if (l.sender_rating != null) d.sender_rating = l.sender_rating;
-      if (l.sender_feedback) d.sender_feedback = l.sender_feedback;
+    for (const u of ups) {
+      if (u.status) d.status = u.status;
+      if (u.proof_of_delivery) d.proof_of_delivery = u.proof_of_delivery;
+      if (u.completed_at) d.completed_at = u.completed_at;
+      if (u.accepted_bid) d.accepted_bid = u.accepted_bid;
+      if (u.sender_rating != null) d.sender_rating = u.sender_rating;
+      if (u.sender_feedback) d.sender_feedback = u.sender_feedback;
+      if (u.payment_invoice) d.payment_invoice = u.payment_invoice;
+      if (u.payment_preimage) d.payment_preimage = u.payment_preimage;
     }
     // Apply declined and withdrawn bids
     const declined = declinedMap.get(id);
