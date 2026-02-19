@@ -6,6 +6,7 @@ import NWCWallet from './NWCWallet';
 import type { View, DeliveryRequest, DeliveryBid, ProofOfDelivery, UserProfile, FormState, AppSettings } from './types';
 import { publishProfile, loadProfile, publishSettings, loadSettings } from './nostrService';
 import { aggregateDeliveries, computeNotifications, filterDeliveryLists } from './utils';
+import { createPaymentInvoice, payPaymentInvoice } from './nwcPayment';
 
 import CreateRequestTab from './tabs/CreateRequestTab';
 import AwaitingBidsTab from './tabs/AwaitingBidsTab';
@@ -63,6 +64,7 @@ export default function DeliveryApp() {
   const pendingDeletes = useRef<Set<string>>(new Set());
   const autoApprovedIds = useRef<Set<string>>(new Set());
   const publishedExpirations = useRef<Set<string>>(new Set());
+  const generatedInvoiceIds = useRef<Set<string>>(new Set());
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -153,6 +155,15 @@ export default function DeliveryApp() {
       const toAutoConfirm = res.filter(r => r.sender === profile.npub && r.status === 'completed' && r.completed_at && r.completed_at < autoConfirmCutoff);
       for (const req of toAutoConfirm) {
         try {
+          // Auto-pay the courier's Lightning invoice if available
+          let paymentPreimage: string | undefined;
+          if (req.payment_invoice && nwcUrl) {
+            try {
+              paymentPreimage = await payPaymentInvoice(nwcUrl, req.payment_invoice);
+            } catch (e) {
+              console.error('Auto-confirm payment failed for', req.id, e);
+            }
+          }
           const cb = req.bids.find(b => b.id === req.accepted_bid);
           if (cb) {
             const cp = await doLoadProfile(cb.courier);
@@ -160,10 +171,36 @@ export default function DeliveryApp() {
             const up: UserProfile = { ...cp, reputation: Math.min(5, Math.max(0, nr)), completed_deliveries: cp.completed_deliveries + 1, verified_identity: true };
             const pe = await signEvent(privHex, KIND_PROFILE, JSON.stringify(up), [['d', cb.courier]]); await pool.current.publish(pe);
           }
-          const upd = { status: 'confirmed', sender_rating: 5, sender_feedback: 'Auto-confirmed after 2 hours', completed_at: req.completed_at, accepted_bid: req.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
+          const upd = { status: 'confirmed', sender_rating: 5, sender_feedback: 'Auto-confirmed after 2 hours', completed_at: req.completed_at, accepted_bid: req.accepted_bid, payment_preimage: paymentPreimage, timestamp: Math.floor(Date.now()/1000) };
           const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id', req.id], ['status', 'confirmed']]);
           await pool.current.publish(ev);
         } catch {}
+      }
+
+      // Auto-generate payment invoices for courier's accepted transports (so sender can pay on cancel or completion)
+      if (nwcUrl) {
+        const needsInvoice = res.filter(r =>
+          (r.status === 'accepted' || r.status === 'intransit') &&
+          r.bids.some(b => b.courier === profile.npub && r.accepted_bid === b.id) &&
+          !r.payment_invoice &&
+          !generatedInvoiceIds.current.has(r.id)
+        );
+        for (const req of needsInvoice) {
+          generatedInvoiceIds.current.add(req.id);
+          try {
+            const ab = req.bids.find(b => b.id === req.accepted_bid);
+            const amt = ab?.amount || req.offer_amount;
+            const invoice = await createPaymentInvoice(nwcUrl, amt, `Nostr Delivery payment for ${req.id.substring(0, 8)}`);
+            const invoiceEv = await signEvent(privHex, KIND_STATUS, JSON.stringify({
+              status: req.status, accepted_bid: req.accepted_bid, payment_invoice: invoice, timestamp: Math.floor(Date.now()/1000)
+            }), [['delivery_id', req.id], ['status', req.status]]);
+            await pool.current.publish(invoiceEv);
+            req.payment_invoice = invoice;
+          } catch (e) {
+            console.error('Failed to auto-generate invoice for', req.id, e);
+            generatedInvoiceIds.current.delete(req.id);
+          }
+        }
       }
 
       // Auto-publish expired status for sender's expired jobs to relay
@@ -204,7 +241,7 @@ export default function DeliveryApp() {
       doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
       doPublishProfile(profile);
     }
-    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear(); publishedExpirations.current.clear();
+    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear(); publishedExpirations.current.clear(); generatedInvoiceIds.current.clear();
   }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
@@ -287,8 +324,36 @@ export default function DeliveryApp() {
   }
   async function cancelJob(id: string) {
     const d = deliveries.find(r=>r.id===id); if (!d) return; const ab = d.bids.find(b=>b.id===d.accepted_bid); const amt = ab?.amount||d.offer_amount;
-    if (!confirm(`Cancel? You forfeit ${amt.toLocaleString()} sats.`)) return;
-    try { setLoading(true); const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',id],['status','expired']]); await pool.current.publish(ev); alert('Cancelled.'); await loadData(); } catch { setError('Failed to cancel'); } finally { setLoading(false); }
+    if (!confirm(`Cancel? You forfeit ${amt.toLocaleString()} sats to the courier.`)) return;
+    try {
+      setLoading(true);
+      // Pay the courier's Lightning invoice as forfeiture
+      let paymentPreimage: string | undefined;
+      if (d.payment_invoice) {
+        if (!nwcUrl) {
+          setError('Connect your NWC wallet in Settings to forfeit payment to courier.');
+          setLoading(false);
+          return;
+        }
+        try {
+          paymentPreimage = await payPaymentInvoice(nwcUrl, d.payment_invoice);
+        } catch (e: any) {
+          setError(`Forfeiture payment failed: ${e?.message || 'Unknown error'}. Please try again.`);
+          setLoading(false);
+          return;
+        }
+      } else if (nwcUrl) {
+        // No invoice from courier yet — warn the sender
+        if (!confirm('The courier has not generated a payment invoice yet. Cancel anyway? The courier can claim forfeited sats later.')) {
+          setLoading(false);
+          return;
+        }
+      }
+      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', forfeited_amount: amt, payment_preimage: paymentPreimage, timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',id],['status','expired']]);
+      await pool.current.publish(ev);
+      alert(paymentPreimage ? `Cancelled. ${amt.toLocaleString()} sats forfeited to courier.` : 'Cancelled.');
+      await loadData();
+    } catch { setError('Failed to cancel'); } finally { setLoading(false); }
   }
   async function declineBid(deliveryId: string, bidId: string) {
     try { setLoading(true);
@@ -309,22 +374,56 @@ export default function DeliveryApp() {
   async function completeDel() {
     if (!activeDelivery) return; if (activeDelivery.packages.some(p=>p.requires_signature) && !sigName.trim()) { setError('Signature required'); return; }
     try { setLoading(true); const pod: ProofOfDelivery = { images: proofImages, signature_name: sigName.trim()||undefined, timestamp: Math.floor(Date.now()/1000), comments: delComments.trim()||undefined };
-      const upd = { status: 'completed', proof_of_delivery: pod, completed_at: Math.floor(Date.now()/1000), accepted_bid: activeDelivery.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
+      // Generate Lightning invoice for payment from courier's NWC wallet
+      let paymentInvoice: string | undefined;
+      if (nwcUrl) {
+        try {
+          const ab = activeDelivery.bids.find(b => b.id === activeDelivery.accepted_bid);
+          const amt = ab?.amount || activeDelivery.offer_amount;
+          paymentInvoice = await createPaymentInvoice(nwcUrl, amt, `Nostr Delivery payment for ${activeDelivery.id.substring(0, 8)}`);
+        } catch (e: any) {
+          setError(`Failed to generate payment invoice: ${e?.message || 'Unknown error'}. Make sure your NWC wallet is connected.`);
+          setLoading(false);
+          return;
+        }
+      } else {
+        setError('Connect your NWC wallet in Settings to receive payment.');
+        setLoading(false);
+        return;
+      }
+      const upd = { status: 'completed', proof_of_delivery: pod, completed_at: Math.floor(Date.now()/1000), accepted_bid: activeDelivery.accepted_bid, payment_invoice: paymentInvoice, timestamp: Math.floor(Date.now()/1000) };
       const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',activeDelivery.id],['status','completed']]);
       await publishAndVerify(ev, 'completion');
-      alert('Completed! Awaiting confirmation.'); setProofImages([]); setSigName(''); setDelComments(''); setShowCompForm(false); await loadData();
+      alert('Completed! Awaiting confirmation and payment.'); setProofImages([]); setSigName(''); setDelComments(''); setShowCompForm(false); await loadData();
     } catch { setError('Failed to complete'); } finally { setLoading(false); }
   }
   async function confirmDel(d: DeliveryRequest) {
     if (rating===0) { setError('Select a rating'); return; }
-    try { setLoading(true); const cb = d.bids.find(b=>b.id===d.accepted_bid);
+    try { setLoading(true);
+      // Pay the courier's Lightning invoice
+      let paymentPreimage: string | undefined;
+      if (d.payment_invoice) {
+        if (!nwcUrl) {
+          setError('Connect your NWC wallet in Settings to release payment.');
+          setLoading(false);
+          return;
+        }
+        try {
+          paymentPreimage = await payPaymentInvoice(nwcUrl, d.payment_invoice);
+        } catch (e: any) {
+          setError(`Payment failed: ${e?.message || 'Unknown error'}. Please try again.`);
+          setLoading(false);
+          return;
+        }
+      }
+      const cb = d.bids.find(b=>b.id===d.accepted_bid);
       if (cb) { const cp = await doLoadProfile(cb.courier); const nr = cp.completed_deliveries===0 ? rating : 5-(5-cp.reputation)*0.9+(rating-cp.reputation)*0.1;
         const up: UserProfile = { ...cp, reputation: Math.min(5,Math.max(0,nr)), completed_deliveries: cp.completed_deliveries+1, verified_identity: true };
         const pe = await signEvent(privHex, KIND_PROFILE, JSON.stringify(up), [['d',cb.courier]]); await pool.current.publish(pe); }
-      const upd = { status: 'confirmed', sender_rating: rating, sender_feedback: feedback.trim()||undefined, completed_at: d.completed_at||Math.floor(Date.now()/1000), accepted_bid: d.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
+      const upd = { status: 'confirmed', sender_rating: rating, sender_feedback: feedback.trim()||undefined, completed_at: d.completed_at||Math.floor(Date.now()/1000), accepted_bid: d.accepted_bid, payment_preimage: paymentPreimage, timestamp: Math.floor(Date.now()/1000) };
       const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id',d.id],['status','confirmed']]);
       await publishAndVerify(ev, 'confirmation');
-      alert('Confirmed!'); setFeedback(''); setRating(0); await loadData();
+      alert(paymentPreimage ? 'Confirmed! Payment sent to courier.' : 'Confirmed!'); setFeedback(''); setRating(0); await loadData();
     } catch { setError('Failed to confirm'); } finally { setLoading(false); }
   }
 
