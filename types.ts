@@ -14,7 +14,7 @@ export interface DeliveryRequest {
 export interface UserProfile { npub: string; display_name?: string; reputation: number; completed_deliveries: number; verified_identity: boolean; }
 export interface AppSettings { darkMode: boolean; nwcUrl: string; displayName?: string; }
 export enum Mode { SENDER='sender', COURIER='courier' }
-export type View = 'create' | 'awaiting' | 'pending' | 'transport' | 'done' | 'browse' | 'active' | 'completed';
+export type View = 'create' | 'awaiting' | 'pending' | 'transport' | 'pending_completion' | 'done' | 'browse' | 'bid_approval' | 'active' | 'awaiting_confirmation' | 'completed';
 
 export const fmtDate = (d: Date) => d.toLocaleDateString();
 export const fmtTime = (d: Date) => `${d.toLocaleTimeString()} ${d.toLocaleTimeString('en-US',{timeZoneName:'short'}).split(' ').pop()||''}`;

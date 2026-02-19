@@ -105,8 +105,12 @@ export function filterDeliveryLists(deliveries: DeliveryRequest[], npub: string)
   const awaitingBids = senderReqs.filter(r => r.status === 'open' && r.bids.length === 0);
   const bidsPending = senderReqs.filter(r => r.status === 'open' && r.bids.length > 0);
   const inTransport = senderReqs.filter(r => r.status === 'accepted' || r.status === 'intransit');
-  const completedReqs = senderReqs.filter(r => r.status === 'completed' || r.status === 'confirmed');
-  const browseJobs = deliveries.filter(r => r.status === 'open' && r.sender !== npub);
+  const pendingCompletion = senderReqs.filter(r => r.status === 'completed');
+  const completedReqs = senderReqs.filter(r => r.status === 'confirmed');
+  const browseJobs = deliveries.filter(r => r.status === 'open' && r.sender !== npub && !r.bids.some(b => b.courier === npub));
+  const awaitingBidApproval = deliveries.filter(r => r.status === 'open' && r.sender !== npub && r.bids.some(b => b.courier === npub));
+  const activeTransports = deliveries.filter(r => (r.status === 'accepted' || r.status === 'intransit') && r.bids.some(b => b.courier === npub && r.accepted_bid === b.id));
+  const awaitingDeliveryConfirmation = deliveries.filter(r => r.status === 'completed' && r.bids.some(b => b.courier === npub && r.accepted_bid === b.id));
   const completedTransports = deliveries.filter(r => r.status === 'confirmed' && r.bids.some(b => b.courier === npub && r.accepted_bid === b.id));
-  return { senderReqs, awaitingBids, bidsPending, inTransport, completedReqs, browseJobs, completedTransports };
+  return { senderReqs, awaitingBids, bidsPending, inTransport, pendingCompletion, completedReqs, browseJobs, awaitingBidApproval, activeTransports, awaitingDeliveryConfirmation, completedTransports };
 }

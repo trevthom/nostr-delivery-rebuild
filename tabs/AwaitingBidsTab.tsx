@@ -25,7 +25,7 @@ export default function AwaitingBidsTab({ darkMode, deliveries, loading, onEdit,
         ? <div className={`${card} text-center`}><AlertCircle className={`w-16 h-16 ${dm ? 'text-gray-600' : 'text-gray-300'} mx-auto mb-4`} /><p className={sub}>No requests awaiting bids.</p></div>
         : <div className="space-y-4">{deliveries.map(req => {
           const remaining = req.expires_at ? formatTimeRemaining(req.expires_at) : null;
-          const isExpiringSoon = req.expires_at ? (req.expires_at - Math.floor(Date.now()/1000)) < 6 * 3600 : false;
+          const isExpiringSoon = req.expires_at ? (req.expires_at - Math.floor(Date.now()/1000)) < 30 * 60 : false;
           return (
           <div key={req.id} className={card}>
             <div className="flex items-center justify-between mb-4">

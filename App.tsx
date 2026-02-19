@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Package, Key, Settings, LogOut, Bell, Bitcoin } from 'lucide-react';
+import { Package, Key, Settings, LogOut, Bitcoin } from 'lucide-react';
 import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
@@ -15,6 +15,9 @@ import CompletedRequestsTab from './tabs/CompletedRequestsTab';
 import BrowseJobsTab from './tabs/BrowseJobsTab';
 import ActiveTransportsTab from './tabs/ActiveTransportsTab';
 import CompletedTransportsTab from './tabs/CompletedTransportsTab';
+import AwaitingBidApprovalTab from './tabs/AwaitingBidApprovalTab';
+import AwaitingDeliveryConfirmationTab from './tabs/AwaitingDeliveryConfirmationTab';
+import PendingCompletionTab from './tabs/PendingCompletionTab';
 
 export default function DeliveryApp() {
   const [auth, setAuth] = useState(false);
@@ -59,6 +62,7 @@ export default function DeliveryApp() {
   const pendingBids = useRef<Map<string, DeliveryBid[]>>(new Map());
   const pendingDeletes = useRef<Set<string>>(new Set());
   const autoApprovedIds = useRef<Set<string>>(new Set());
+  const publishedExpirations = useRef<Set<string>>(new Set());
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -144,7 +148,17 @@ export default function DeliveryApp() {
         }
       }
 
-      const act = res.find(r => (r.status==='accepted'||r.status==='intransit'||r.status==='completed') && r.bids.some(b => b.courier===profile.npub && r.accepted_bid===b.id));
+      // Auto-publish expired status for sender's expired jobs to relay
+      const newlyExpired = res.filter(r => r.sender === profile.npub && r.status === 'expired' && !publishedExpirations.current.has(r.id));
+      for (const req of newlyExpired) {
+        publishedExpirations.current.add(req.id);
+        try {
+          const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',req.id],['status','expired']]);
+          pool.current.publish(ev);
+        } catch {}
+      }
+
+      const act = res.find(r => (r.status==='accepted'||r.status==='intransit') && r.bids.some(b => b.courier===profile.npub && r.accepted_bid===b.id));
       setActiveDelivery(act || null);
       const nps = new Set<string>(); res.filter(r => (r.status==='confirmed'||r.status==='completed') && r.accepted_bid).forEach(d => { const cb = d.bids.find(b => b.id===d.accepted_bid); if (cb) nps.add(cb.courier); });
       const profs: Record<string, UserProfile> = {}; for (const np of nps) { try { profs[np] = await doLoadProfile(np); } catch {} } setCourierProfiles(profs);
@@ -172,7 +186,7 @@ export default function DeliveryApp() {
       doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
       doPublishProfile(profile);
     }
-    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear();
+    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear(); publishedExpirations.current.clear();
   }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
@@ -201,7 +215,7 @@ export default function DeliveryApp() {
 
   async function createDel() {
     try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
-      const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*86400, auto_approve: autoApprove||undefined };
+      const id = genId(); const d: DeliveryRequest = { id, sender: profile.npub, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg ? form.packages : [], persons: isPerson ? form.persons : undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, status: 'open', bids: [], created_at: Math.floor(Date.now()/1000), expires_at: Math.floor(Date.now()/1000)+2*3600, auto_approve: autoApprove||undefined };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',id],['sender',profile.npub],['status','open']]);
       // Track locally so loadData merges it until relay confirms
       pendingLocal.current.set(id, d);
@@ -314,7 +328,7 @@ export default function DeliveryApp() {
   const { newBids, compSender, bidAccepted, compCourier } = computeNotifications(deliveries, profile.npub, seenBids, seenActive, seenCompleted);
 
   // Filtered delivery lists
-  const { awaitingBids, bidsPending, inTransport, completedReqs, browseJobs, completedTransports } = filterDeliveryLists(deliveries, profile.npub);
+  const { awaitingBids, bidsPending, inTransport, pendingCompletion, completedReqs, browseJobs, awaitingBidApproval, activeTransports, awaitingDeliveryConfirmation, completedTransports } = filterDeliveryLists(deliveries, profile.npub);
 
   // Total sats earned from completed transports
   const totalSatsEarned = completedTransports.reduce((sum, d) => {
@@ -339,14 +353,10 @@ export default function DeliveryApp() {
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2"><span className={`text-sm font-medium ${dm?'text-gray-300':'text-gray-700'}`}>CONTEXT:</span>
                 <select value={mode} onChange={e=>{setMode(e.target.value as Mode);setView(e.target.value===Mode.SENDER?'create':'browse');loadData();}} className={`px-3 py-2 border ${dm?'border-gray-600 bg-gray-700 text-white':'border-gray-300 bg-white'} rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-orange-500`}>
-                  <option value={Mode.SENDER}>Request Shipping/Taxi</option><option value={Mode.COURIER}>Provide Transport</option></select></div>
+                  <option value={Mode.SENDER}>Requester</option><option value={Mode.COURIER}>Transporter</option></select></div>
               <button ref={settingsBtnRef} onClick={()=>{setShowSettings(!showSettings);window.scrollTo({top:0,behavior:'smooth'});}} className={`p-2 ${dm?'hover:bg-gray-700':'hover:bg-gray-100'} rounded-lg`}><Settings className={`w-5 h-5 ${dm?'text-gray-300':'text-gray-600'}`}/></button>
               <button onClick={handleLogout} className={`p-2 ${dm?'hover:bg-gray-700':'hover:bg-gray-100'} rounded-lg`}><LogOut className={`w-5 h-5 ${dm?'text-gray-300':'text-gray-600'}`}/></button>
             </div>
-          </div>
-          <div className="flex justify-center mt-2">
-            {mode===Mode.SENDER&&<>{newBids>0&&<div className={`flex items-center gap-2 px-4 py-2 ${dm?'bg-blue-900 text-blue-200':'bg-blue-100 text-blue-800'} rounded-full text-sm`}><Bell className="w-4 h-4"/><span>{newBids} new bid(s)</span></div>}{compSender>0&&<div className={`flex items-center gap-2 px-4 py-2 ml-2 ${dm?'bg-green-900 text-green-200':'bg-green-100 text-green-800'} rounded-full text-sm`}><Bell className="w-4 h-4"/><span>{compSender} delivery(ies) completed</span></div>}</>}
-            {mode===Mode.COURIER&&<>{bidAccepted>0&&<div className={`flex items-center gap-2 px-4 py-2 ${dm?'bg-green-900 text-green-200':'bg-green-100 text-green-800'} rounded-full text-sm`}><Bell className="w-4 h-4"/><span>{bidAccepted} bid(s) accepted</span></div>}{compCourier>0&&<div className={`flex items-center gap-2 px-4 py-2 ml-2 ${dm?'bg-blue-900 text-blue-200':'bg-blue-100 text-blue-800'} rounded-full text-sm`}><Bell className="w-4 h-4"/><span>Transport Completed!</span></div>}</>}
           </div>
         </div>
       </header>
@@ -377,12 +387,15 @@ export default function DeliveryApp() {
           {tabBtn('awaiting', 'Awaiting Bids', awaitingBids.length > 0 ? awaitingBids.length : undefined)}
           {tabBtn('pending', 'Bids Pending Approval', newBids > 0 ? newBids : undefined)}
           {tabBtn('transport', 'In Transport', inTransport.length > 0 ? inTransport.length : undefined)}
-          {tabBtn('done', 'Completed', compSender > 0 ? compSender : undefined)}
+          {tabBtn('pending_completion', 'Pending Completion', compSender > 0 ? compSender : undefined)}
+          {tabBtn('done', 'Completed')}
         </>}
         {mode===Mode.COURIER&&<>
           {tabBtn('browse', 'Browse Jobs')}
-          {tabBtn('active', 'Active Transports')}
-          <button onClick={()=>{setView('completed');loadData();setSeenCompleted(p=>new Set([...p,...deliveries.filter(r=>r.status==='confirmed'&&r.bids.some(b=>b.courier===profile.npub&&r.accepted_bid===b.id)).map(r=>r.id)]));}} className={`px-6 py-3 font-medium transition-colors whitespace-nowrap ${view==='completed'?'border-b-2 border-orange-500 text-orange-600':dm?'text-gray-300 hover:text-white':'text-gray-600 hover:text-gray-900'}`}>Completed Transports</button>
+          {tabBtn('bid_approval', 'Awaiting Bid Approval', awaitingBidApproval.length > 0 ? awaitingBidApproval.length : undefined)}
+          {tabBtn('active', 'Active Transports', bidAccepted > 0 ? bidAccepted : undefined)}
+          {tabBtn('awaiting_confirmation', 'Awaiting Delivery Confirmation', awaitingDeliveryConfirmation.length > 0 ? awaitingDeliveryConfirmation.length : undefined)}
+          <button onClick={()=>{setView('completed');loadData();setSeenCompleted(p=>new Set([...p,...deliveries.filter(r=>r.status==='confirmed'&&r.bids.some(b=>b.courier===profile.npub&&r.accepted_bid===b.id)).map(r=>r.id)]));}} className={`px-6 py-3 font-medium transition-colors whitespace-nowrap ${view==='completed'?'border-b-2 border-orange-500 text-orange-600':dm?'text-gray-300 hover:text-white':'text-gray-600 hover:text-gray-900'}`}>Completed Transports{compCourier > 0 && <span className={`ml-2 px-2 py-0.5 text-xs rounded-full font-bold ${dm ? 'bg-red-700 text-red-100' : 'bg-red-500 text-white'}`}>{compCourier}</span>}</button>
         </>}
       </div></div>
 
@@ -393,11 +406,14 @@ export default function DeliveryApp() {
         {view==='awaiting'&&mode===Mode.SENDER&&<AwaitingBidsTab darkMode={darkMode} deliveries={awaitingBids} loading={loading} onEdit={startEdit} onDelete={deleteDel} />}
         {view==='pending'&&mode===Mode.SENDER&&<BidsPendingTab darkMode={darkMode} deliveries={bidsPending} loading={loading} seenBids={seenBids} setSeenBids={setSeenBids} onAcceptBid={acceptBid} onEdit={startEdit} onDelete={deleteDel} />}
         {view==='transport'&&mode===Mode.SENDER&&<InTransportTab darkMode={darkMode} deliveries={inTransport} loading={loading} onCancel={cancelJob} />}
-        {view==='done'&&mode===Mode.SENDER&&<CompletedRequestsTab darkMode={darkMode} deliveries={completedReqs} loading={loading} collapsed={collapsed} setCollapsed={setCollapsed} courierProfiles={courierProfiles} rating={rating} setRating={setRating} feedback={feedback} setFeedback={setFeedback} onConfirm={confirmDel} />}
+        {view==='pending_completion'&&mode===Mode.SENDER&&<PendingCompletionTab darkMode={darkMode} deliveries={pendingCompletion} loading={loading} rating={rating} setRating={setRating} feedback={feedback} setFeedback={setFeedback} onConfirm={confirmDel} />}
+        {view==='done'&&mode===Mode.SENDER&&<CompletedRequestsTab darkMode={darkMode} deliveries={completedReqs} loading={loading} collapsed={collapsed} setCollapsed={setCollapsed} courierProfiles={courierProfiles} />}
 
         {/* Courier Tabs */}
         {view==='browse'&&mode===Mode.COURIER&&<BrowseJobsTab darkMode={darkMode} deliveries={browseJobs} loading={loading} profile={profile} onPlaceBid={placeBid} />}
+        {view==='bid_approval'&&mode===Mode.COURIER&&<AwaitingBidApprovalTab darkMode={darkMode} deliveries={awaitingBidApproval} loading={loading} profile={profile} />}
         {view==='active'&&mode===Mode.COURIER&&<ActiveTransportsTab darkMode={darkMode} activeDelivery={activeDelivery} loading={loading} seenActive={seenActive} setSeenActive={setSeenActive} showCompForm={showCompForm} setShowCompForm={setShowCompForm} proofImages={proofImages} setProofImages={setProofImages} sigName={sigName} setSigName={setSigName} delComments={delComments} setDelComments={setDelComments} onImageUpload={handleImg} onComplete={completeDel} />}
+        {view==='awaiting_confirmation'&&mode===Mode.COURIER&&<AwaitingDeliveryConfirmationTab darkMode={darkMode} deliveries={awaitingDeliveryConfirmation} loading={loading} />}
         {view==='completed'&&mode===Mode.COURIER&&<CompletedTransportsTab darkMode={darkMode} deliveries={completedTransports} loading={loading} collapsed={collapsed} setCollapsed={setCollapsed} />}
       </div>
     </div>
