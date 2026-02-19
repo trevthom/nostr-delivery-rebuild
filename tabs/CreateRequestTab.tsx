@@ -58,7 +58,7 @@ export default function CreateRequestTab({ darkMode, editing, setEditing, form, 
         <div className={`p-4 ${sec} rounded-lg`}>
           <label className={`flex items-center gap-3 ${dm ? 'text-gray-300' : 'text-gray-700'} cursor-pointer`}>
             <input type="checkbox" checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} className="rounded w-5 h-5" />
-            <div><span className="font-medium">Auto-approve matching bids</span><p className={`text-sm ${dm ? 'text-gray-400' : 'text-gray-500'} mt-1`}>Automatically approve bids that accept your offer amount (non-counteroffers). The job will skip "Bids Pending Approval" and move directly to "In Transport".</p></div>
+            <div><span className="font-medium">Auto-approve matching bids</span><p className={`text-sm ${dm ? 'text-gray-400' : 'text-gray-500'} mt-1`}>Automatically approve bids that match your offer amount (non-counteroffers). The job will skip "Accept/Decline Bids" and move directly to "In Transport".</p></div>
           </label>
         </div>
         <button onClick={editing ? onUpdate : onCreate} disabled={loading} className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-medium py-4 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
