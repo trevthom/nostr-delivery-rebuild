@@ -10,6 +10,7 @@ export interface DeliveryRequest {
   expires_at?: number; status: string; bids: DeliveryBid[]; accepted_bid?: string; created_at: number;
   proof_of_delivery?: ProofOfDelivery; sender_feedback?: string; sender_rating?: number; completed_at?: number;
   auto_approve?: boolean;
+  declined_bids?: string[]; withdrawn_bids?: string[]; bids_reset_at?: number;
 }
 export interface UserProfile { npub: string; display_name?: string; reputation: number; completed_deliveries: number; verified_identity: boolean; }
 export interface AppSettings { darkMode: boolean; nwcUrl: string; displayName?: string; }

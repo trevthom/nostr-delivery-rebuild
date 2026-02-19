@@ -43,6 +43,7 @@ export default function PendingCompletionTab({ darkMode, deliveries, loading, ra
                 <div className="mb-4"><label className={`block text-sm font-medium ${dm ? 'text-gray-300' : 'text-gray-700'} mb-2`}>Rate the Courier</label><div className="flex gap-2">{[1, 2, 3, 4, 5].map(st => <button key={st} onClick={() => setRating(st)} className={`text-3xl ${rating >= st ? 'text-yellow-400 scale-110' : dm ? 'text-gray-600' : 'text-gray-300'}`}>&#9733;</button>)}{rating > 0 && <span className={`ml-2 self-center ${dm ? 'text-gray-300' : 'text-gray-700'}`}>{rating} star{rating !== 1 ? 's' : ''}</span>}</div></div>
                 <div className="mb-4"><label className={`block text-sm font-medium ${dm ? 'text-gray-300' : 'text-gray-700'} mb-2`}>Feedback (Optional)</label><textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="Share your experience..." rows={3} spellCheck={false} className={inp} /></div>
                 <button onClick={() => onConfirm(req)} disabled={loading} className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-medium py-3 rounded-lg flex items-center justify-center gap-2"><CheckCircle className="w-5 h-5" />Confirm Delivery & Release Payment</button>
+                <p className={`text-xs text-center mt-2 ${dm ? 'text-gray-400' : 'text-gray-500'}`}>If not confirmed within 2 hours, delivery will be auto-confirmed with a 5-star rating.</p>
               </div>
             </div>
           ))}

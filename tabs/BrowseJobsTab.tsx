@@ -61,7 +61,7 @@ export default function BrowseJobsTab({ darkMode, deliveries, loading, profile, 
               <p className={`text-lg font-bold ${dm ? 'text-blue-400' : 'text-blue-600'}`}>{req.insurance_amount.toLocaleString()} sats</p>
             </div>}
             {!myBid ? <div className="flex gap-2">
-              <button onClick={() => onPlaceBid(req.id, req.offer_amount)} disabled={loading} className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-medium py-3 rounded-lg">Accept for {req.offer_amount.toLocaleString()} sats</button>
+              <button onClick={() => onPlaceBid(req.id, req.offer_amount)} disabled={loading} className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-medium py-3 rounded-lg">Place Bid for {req.offer_amount.toLocaleString()} sats</button>
               <button onClick={() => { const c = prompt('Enter your counter-offer amount in sats:'); if (c && parseInt(c) > 0) onPlaceBid(req.id, parseInt(c)); }} disabled={loading} className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-medium py-3 rounded-lg">Counter Offer</button>
             </div> : <div className={`text-center py-3 rounded-lg font-medium text-sm ${dm ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-500'}`}>Bid submitted — awaiting sender response</div>}
           </div>

@@ -47,6 +47,8 @@ export function aggregateDeliveries(
   }
 
   const sMap = new Map<string, any[]>();
+  const declinedMap = new Map<string, Set<string>>();
+  const withdrawnMap = new Map<string, Set<string>>();
   const seenStatusIds = new Set<string>();
   for (const ev of stEvs) {
     try {
@@ -55,8 +57,16 @@ export function aggregateDeliveries(
       const u = JSON.parse(ev.content);
       const did = ev.tags.find(t => t[0] === 'delivery_id')?.[1];
       if (did) {
-        if (!sMap.has(did)) sMap.set(did, []);
-        sMap.get(did)!.push({ ...u, _ts: ev.created_at });
+        if (u.type === 'bid_declined' && u.bid_id) {
+          if (!declinedMap.has(did)) declinedMap.set(did, new Set());
+          declinedMap.get(did)!.add(u.bid_id);
+        } else if (u.type === 'bid_withdrawn' && u.bid_id) {
+          if (!withdrawnMap.has(did)) withdrawnMap.set(did, new Set());
+          withdrawnMap.get(did)!.add(u.bid_id);
+        } else {
+          if (!sMap.has(did)) sMap.set(did, []);
+          sMap.get(did)!.push({ ...u, _ts: ev.created_at });
+        }
       }
     } catch {}
   }
@@ -77,6 +87,20 @@ export function aggregateDeliveries(
       if (l.accepted_bid) d.accepted_bid = l.accepted_bid;
       if (l.sender_rating != null) d.sender_rating = l.sender_rating;
       if (l.sender_feedback) d.sender_feedback = l.sender_feedback;
+    }
+    // Apply declined and withdrawn bids
+    const declined = declinedMap.get(id);
+    const withdrawn = withdrawnMap.get(id);
+    if (declined) d.declined_bids = Array.from(declined);
+    if (withdrawn) d.withdrawn_bids = Array.from(withdrawn);
+    // Filter out bids created before bids_reset_at
+    if (d.bids_reset_at) {
+      d.bids = d.bids.filter(b => b.created_at > d.bids_reset_at!);
+    }
+    // Filter out declined and withdrawn bids from the active bids list
+    if (d.declined_bids?.length || d.withdrawn_bids?.length) {
+      const removedIds = new Set([...(d.declined_bids || []), ...(d.withdrawn_bids || [])]);
+      d.bids = d.bids.filter(b => !removedIds.has(b.id));
     }
     if (d.status === 'open' && d.expires_at && d.expires_at < now) d.status = 'expired';
     res.push(d);
@@ -107,7 +131,9 @@ export function filterDeliveryLists(deliveries: DeliveryRequest[], npub: string)
   const inTransport = senderReqs.filter(r => r.status === 'accepted' || r.status === 'intransit');
   const pendingCompletion = senderReqs.filter(r => r.status === 'completed');
   const completedReqs = senderReqs.filter(r => r.status === 'confirmed');
+  // Browse Jobs: open requests not by this user where courier has no active bid (bids filtered by aggregation already exclude declined/withdrawn)
   const browseJobs = deliveries.filter(r => r.status === 'open' && r.sender !== npub && !r.bids.some(b => b.courier === npub));
+  // Your Bids: open requests where courier has an active bid (not declined/withdrawn)
   const awaitingBidApproval = deliveries.filter(r => r.status === 'open' && r.sender !== npub && r.bids.some(b => b.courier === npub));
   const activeTransports = deliveries.filter(r => (r.status === 'accepted' || r.status === 'intransit') && r.bids.some(b => b.courier === npub && r.accepted_bid === b.id));
   const awaitingDeliveryConfirmation = deliveries.filter(r => r.status === 'completed' && r.bids.some(b => b.courier === npub && r.accepted_bid === b.id));

@@ -10,29 +10,33 @@ interface Props {
   deliveries: DeliveryRequest[];
   loading: boolean;
   profile: UserProfile;
+  onRemoveBid: (deliveryId: string, bidId: string) => void;
 }
 
-export default function AwaitingBidApprovalTab({ darkMode, deliveries, loading, profile }: Props) {
+export default function AwaitingBidApprovalTab({ darkMode, deliveries, loading, profile, onRemoveBid }: Props) {
   const { dm, card, sub, txt, sec } = getStyles(darkMode);
   const s = { dm, sub, txt, sec };
 
   return (
     <div className="space-y-4">
-      <h2 className={`text-2xl font-bold mb-4 ${txt}`}>Awaiting Bid Approval</h2>
+      <h2 className={`text-2xl font-bold mb-4 ${txt}`}>Your Bids</h2>
       {loading ? <div className={`${card} text-center`}><p className={sub}>Loading...</p></div>
       : deliveries.length === 0
-        ? <div className={`${card} text-center`}><CheckCircle className={`w-16 h-16 ${dm ? 'text-gray-600' : 'text-gray-300'} mx-auto mb-4`} /><p className={sub}>No bids awaiting approval.</p></div>
+        ? <div className={`${card} text-center`}><CheckCircle className={`w-16 h-16 ${dm ? 'text-gray-600' : 'text-gray-300'} mx-auto mb-4`} /><p className={sub}>No active bids.</p></div>
         : deliveries.map(req => {
           const myBid = req.bids.find(b => b.courier === profile.npub);
           const remaining = req.expires_at ? formatTimeRemaining(req.expires_at) : null;
           return (
           <div key={req.id} className={`${card} ${dm ? 'ring-2 ring-green-600' : 'ring-2 ring-green-400'}`}>
-            {myBid && <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${dm ? 'bg-green-900 border border-green-700' : 'bg-green-50 border border-green-200'}`}>
-              <CheckCircle className={`w-5 h-5 ${dm ? 'text-green-400' : 'text-green-600'}`} />
-              <div>
-                <span className={`text-sm font-bold ${dm ? 'text-green-200' : 'text-green-700'}`}>Your Bid: {myBid.amount.toLocaleString()} sats</span>
-                <span className={`text-xs ml-2 ${dm ? 'text-green-300' : 'text-green-600'}`}>Placed {fmtDate(new Date(myBid.created_at * 1000))} at {fmtTime(new Date(myBid.created_at * 1000))}</span>
+            {myBid && <div className={`mb-4 p-3 rounded-lg flex items-center justify-between ${dm ? 'bg-green-900 border border-green-700' : 'bg-green-50 border border-green-200'}`}>
+              <div className="flex items-center gap-2">
+                <CheckCircle className={`w-5 h-5 ${dm ? 'text-green-400' : 'text-green-600'}`} />
+                <div>
+                  <span className={`text-sm font-bold ${dm ? 'text-green-200' : 'text-green-700'}`}>Your Bid: {myBid.amount.toLocaleString()} sats</span>
+                  <span className={`text-xs ml-2 ${dm ? 'text-green-300' : 'text-green-600'}`}>Placed {fmtDate(new Date(myBid.created_at * 1000))} at {fmtTime(new Date(myBid.created_at * 1000))}</span>
+                </div>
               </div>
+              <button onClick={() => onRemoveBid(req.id, myBid.id)} disabled={loading} className={`px-4 py-2 text-sm font-medium rounded-lg ${dm ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'}`}>Remove Bid</button>
             </div>}
             <div className="flex items-start justify-between mb-4">
               <div className={`flex items-center gap-4 text-sm ${sub}`}>

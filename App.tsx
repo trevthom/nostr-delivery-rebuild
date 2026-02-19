@@ -148,6 +148,24 @@ export default function DeliveryApp() {
         }
       }
 
+      // Auto-confirm: if a delivery has been in 'completed' status for over 2 hours, auto-confirm with 5-star rating
+      const autoConfirmCutoff = Math.floor(Date.now()/1000) - 2 * 3600;
+      const toAutoConfirm = res.filter(r => r.sender === profile.npub && r.status === 'completed' && r.completed_at && r.completed_at < autoConfirmCutoff);
+      for (const req of toAutoConfirm) {
+        try {
+          const cb = req.bids.find(b => b.id === req.accepted_bid);
+          if (cb) {
+            const cp = await doLoadProfile(cb.courier);
+            const nr = cp.completed_deliveries === 0 ? 5 : 5 - (5 - cp.reputation) * 0.9 + (5 - cp.reputation) * 0.1;
+            const up: UserProfile = { ...cp, reputation: Math.min(5, Math.max(0, nr)), completed_deliveries: cp.completed_deliveries + 1, verified_identity: true };
+            const pe = await signEvent(privHex, KIND_PROFILE, JSON.stringify(up), [['d', cb.courier]]); await pool.current.publish(pe);
+          }
+          const upd = { status: 'confirmed', sender_rating: 5, sender_feedback: 'Auto-confirmed after 2 hours', completed_at: req.completed_at, accepted_bid: req.accepted_bid, timestamp: Math.floor(Date.now()/1000) };
+          const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify(upd), [['delivery_id', req.id], ['status', 'confirmed']]);
+          await pool.current.publish(ev);
+        } catch {}
+      }
+
       // Auto-publish expired status for sender's expired jobs to relay
       const newlyExpired = res.filter(r => r.sender === profile.npub && r.status === 'expired' && !publishedExpirations.current.has(r.id));
       for (const req of newlyExpired) {
@@ -227,7 +245,8 @@ export default function DeliveryApp() {
   }
   async function updateDel() {
     if (!editing) return; try { if (!form.pickupAddr||!form.dropoffAddr||!form.offer) { setError('Fill all required fields'); return; } setLoading(true);
-      const d: DeliveryRequest = { ...editing, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg?form.packages:[], persons: isPerson?form.persons:undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, auto_approve: autoApprove||undefined };
+      const hadBids = editing.bids.length > 0;
+      const d: DeliveryRequest = { ...editing, pickup: { address: form.pickupAddr, instructions: form.pickupInst||undefined }, dropoff: { address: form.dropoffAddr, instructions: form.dropoffInst||undefined }, packages: isPkg?form.packages:[], persons: isPerson?form.persons:undefined, offer_amount: parseInt(form.offer), insurance_amount: form.insurance?parseInt(form.insurance):undefined, time_window: form.timeWindow==='custom'?form.customDate:form.timeWindow, auto_approve: autoApprove||undefined, ...(hadBids ? { bids_reset_at: Math.floor(Date.now()/1000), bids: [] } : {}) };
       const ev = await signEvent(privHex, KIND_DELIVERY, JSON.stringify(d), [['d',editing.id],['sender',profile.npub],['status','open']]);
       pendingLocal.current.set(editing.id, d);
       setDeliveries(prev => prev.map(r => r.id === editing.id ? d : r));
@@ -270,6 +289,22 @@ export default function DeliveryApp() {
     const d = deliveries.find(r=>r.id===id); if (!d) return; const ab = d.bids.find(b=>b.id===d.accepted_bid); const amt = ab?.amount||d.offer_amount;
     if (!confirm(`Cancel? You forfeit ${amt.toLocaleString()} sats.`)) return;
     try { setLoading(true); const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ status: 'expired', timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',id],['status','expired']]); await pool.current.publish(ev); alert('Cancelled.'); await loadData(); } catch { setError('Failed to cancel'); } finally { setLoading(false); }
+  }
+  async function declineBid(deliveryId: string, bidId: string) {
+    try { setLoading(true);
+      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ type: 'bid_declined', bid_id: bidId, timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',deliveryId],['status','bid_declined']]);
+      await pool.current.publish(ev);
+      setDeliveries(prev => prev.map(r => r.id === deliveryId ? { ...r, declined_bids: [...(r.declined_bids||[]), bidId], bids: r.bids.filter(b => b.id !== bidId) } : r));
+      await loadData();
+    } catch { setError('Failed to decline bid'); } finally { setLoading(false); }
+  }
+  async function removeBid(deliveryId: string, bidId: string) {
+    try { setLoading(true);
+      const ev = await signEvent(privHex, KIND_STATUS, JSON.stringify({ type: 'bid_withdrawn', bid_id: bidId, timestamp: Math.floor(Date.now()/1000) }), [['delivery_id',deliveryId],['status','bid_withdrawn']]);
+      await pool.current.publish(ev);
+      setDeliveries(prev => prev.map(r => r.id === deliveryId ? { ...r, withdrawn_bids: [...(r.withdrawn_bids||[]), bidId], bids: r.bids.filter(b => b.id !== bidId) } : r));
+      await loadData();
+    } catch { setError('Failed to remove bid'); } finally { setLoading(false); }
   }
   async function completeDel() {
     if (!activeDelivery) return; if (activeDelivery.packages.some(p=>p.requires_signature) && !sigName.trim()) { setError('Signature required'); return; }
@@ -385,14 +420,14 @@ export default function DeliveryApp() {
         {mode===Mode.SENDER&&<>
           {tabBtn('create', 'Create Request')}
           {tabBtn('awaiting', 'Awaiting Bids', awaitingBids.length > 0 ? awaitingBids.length : undefined)}
-          {tabBtn('pending', 'Bids Pending Approval', newBids > 0 ? newBids : undefined)}
+          {tabBtn('pending', 'Accept/Decline Bids', newBids > 0 ? newBids : undefined)}
           {tabBtn('transport', 'In Transport', inTransport.length > 0 ? inTransport.length : undefined)}
           {tabBtn('pending_completion', 'Pending Completion', compSender > 0 ? compSender : undefined)}
           {tabBtn('done', 'Completed')}
         </>}
         {mode===Mode.COURIER&&<>
           {tabBtn('browse', 'Browse Jobs')}
-          {tabBtn('bid_approval', 'Awaiting Bid Approval', awaitingBidApproval.length > 0 ? awaitingBidApproval.length : undefined)}
+          {tabBtn('bid_approval', 'Your Bids', awaitingBidApproval.length > 0 ? awaitingBidApproval.length : undefined)}
           {tabBtn('active', 'Active Transports', bidAccepted > 0 ? bidAccepted : undefined)}
           {tabBtn('awaiting_confirmation', 'Awaiting Delivery Confirmation', awaitingDeliveryConfirmation.length > 0 ? awaitingDeliveryConfirmation.length : undefined)}
           <button onClick={()=>{setView('completed');loadData();setSeenCompleted(p=>new Set([...p,...deliveries.filter(r=>r.status==='confirmed'&&r.bids.some(b=>b.courier===profile.npub&&r.accepted_bid===b.id)).map(r=>r.id)]));}} className={`px-6 py-3 font-medium transition-colors whitespace-nowrap ${view==='completed'?'border-b-2 border-orange-500 text-orange-600':dm?'text-gray-300 hover:text-white':'text-gray-600 hover:text-gray-900'}`}>Completed Transports{compCourier > 0 && <span className={`ml-2 px-2 py-0.5 text-xs rounded-full font-bold ${dm ? 'bg-red-700 text-red-100' : 'bg-red-500 text-white'}`}>{compCourier}</span>}</button>
@@ -404,14 +439,14 @@ export default function DeliveryApp() {
         {/* Sender Tabs */}
         {view==='create'&&mode===Mode.SENDER&&<CreateRequestTab darkMode={darkMode} editing={editing} setEditing={setEditing} form={form} setForm={setForm} isPkg={isPkg} setIsPkg={setIsPkg} isPerson={isPerson} setIsPerson={setIsPerson} autoApprove={autoApprove} setAutoApprove={setAutoApprove} loading={loading} resetForm={resetForm} onCreate={createDel} onUpdate={updateDel} />}
         {view==='awaiting'&&mode===Mode.SENDER&&<AwaitingBidsTab darkMode={darkMode} deliveries={awaitingBids} loading={loading} onEdit={startEdit} onDelete={deleteDel} />}
-        {view==='pending'&&mode===Mode.SENDER&&<BidsPendingTab darkMode={darkMode} deliveries={bidsPending} loading={loading} seenBids={seenBids} setSeenBids={setSeenBids} onAcceptBid={acceptBid} onEdit={startEdit} onDelete={deleteDel} />}
+        {view==='pending'&&mode===Mode.SENDER&&<BidsPendingTab darkMode={darkMode} deliveries={bidsPending} loading={loading} seenBids={seenBids} setSeenBids={setSeenBids} onAcceptBid={acceptBid} onDeclineBid={declineBid} onEdit={startEdit} onDelete={deleteDel} />}
         {view==='transport'&&mode===Mode.SENDER&&<InTransportTab darkMode={darkMode} deliveries={inTransport} loading={loading} onCancel={cancelJob} />}
         {view==='pending_completion'&&mode===Mode.SENDER&&<PendingCompletionTab darkMode={darkMode} deliveries={pendingCompletion} loading={loading} rating={rating} setRating={setRating} feedback={feedback} setFeedback={setFeedback} onConfirm={confirmDel} />}
         {view==='done'&&mode===Mode.SENDER&&<CompletedRequestsTab darkMode={darkMode} deliveries={completedReqs} loading={loading} collapsed={collapsed} setCollapsed={setCollapsed} courierProfiles={courierProfiles} />}
 
         {/* Courier Tabs */}
         {view==='browse'&&mode===Mode.COURIER&&<BrowseJobsTab darkMode={darkMode} deliveries={browseJobs} loading={loading} profile={profile} onPlaceBid={placeBid} />}
-        {view==='bid_approval'&&mode===Mode.COURIER&&<AwaitingBidApprovalTab darkMode={darkMode} deliveries={awaitingBidApproval} loading={loading} profile={profile} />}
+        {view==='bid_approval'&&mode===Mode.COURIER&&<AwaitingBidApprovalTab darkMode={darkMode} deliveries={awaitingBidApproval} loading={loading} profile={profile} onRemoveBid={removeBid} />}
         {view==='active'&&mode===Mode.COURIER&&<ActiveTransportsTab darkMode={darkMode} activeDelivery={activeDelivery} loading={loading} seenActive={seenActive} setSeenActive={setSeenActive} showCompForm={showCompForm} setShowCompForm={setShowCompForm} proofImages={proofImages} setProofImages={setProofImages} sigName={sigName} setSigName={setSigName} delComments={delComments} setDelComments={setDelComments} onImageUpload={handleImg} onComplete={completeDel} />}
         {view==='awaiting_confirmation'&&mode===Mode.COURIER&&<AwaitingDeliveryConfirmationTab darkMode={darkMode} deliveries={awaitingDeliveryConfirmation} loading={loading} />}
         {view==='completed'&&mode===Mode.COURIER&&<CompletedTransportsTab darkMode={darkMode} deliveries={completedTransports} loading={loading} collapsed={collapsed} setCollapsed={setCollapsed} />}
