@@ -1,5 +1,5 @@
 import React from 'react';
-import { Package, Clock, CheckCircle, Timer } from 'lucide-react';
+import { Clock, CheckCircle, Timer } from 'lucide-react';
 import type { DeliveryRequest, UserProfile } from '../types';
 import { getStyles, fmtDate, fmtTime } from '../types';
 import { LocBlock, PkgBlock, PersonBlock } from '../helpers';
@@ -10,34 +10,23 @@ interface Props {
   deliveries: DeliveryRequest[];
   loading: boolean;
   profile: UserProfile;
-  onPlaceBid: (requestId: string, amount: number) => void;
 }
 
-export default function BrowseJobsTab({ darkMode, deliveries, loading, profile, onPlaceBid }: Props) {
+export default function AwaitingBidApprovalTab({ darkMode, deliveries, loading, profile }: Props) {
   const { dm, card, sub, txt, sec } = getStyles(darkMode);
   const s = { dm, sub, txt, sec };
 
-  // Sort: jobs the courier has bid on appear at the top, ordered by bid time ascending
-  const sorted = [...deliveries].sort((a, b) => {
-    const aBid = a.bids.find(bid => bid.courier === profile.npub);
-    const bBid = b.bids.find(bid => bid.courier === profile.npub);
-    if (aBid && bBid) return aBid.created_at - bBid.created_at;
-    if (aBid && !bBid) return -1;
-    if (!aBid && bBid) return 1;
-    return b.created_at - a.created_at;
-  });
-
   return (
     <div className="space-y-4">
-      <h2 className={`text-2xl font-bold mb-4 ${txt}`}>Available Transport Jobs</h2>
+      <h2 className={`text-2xl font-bold mb-4 ${txt}`}>Awaiting Bid Approval</h2>
       {loading ? <div className={`${card} text-center`}><p className={sub}>Loading...</p></div>
-      : sorted.length === 0
-        ? <div className={`${card} text-center`}><Package className={`w-16 h-16 ${dm ? 'text-gray-600' : 'text-gray-300'} mx-auto mb-4`} /><p className={sub}>No requests available.</p></div>
-        : sorted.map(req => {
+      : deliveries.length === 0
+        ? <div className={`${card} text-center`}><CheckCircle className={`w-16 h-16 ${dm ? 'text-gray-600' : 'text-gray-300'} mx-auto mb-4`} /><p className={sub}>No bids awaiting approval.</p></div>
+        : deliveries.map(req => {
           const myBid = req.bids.find(b => b.courier === profile.npub);
           const remaining = req.expires_at ? formatTimeRemaining(req.expires_at) : null;
           return (
-          <div key={req.id} className={`${card} ${myBid ? (dm ? 'ring-2 ring-green-600' : 'ring-2 ring-green-400') : ''}`}>
+          <div key={req.id} className={`${card} ${dm ? 'ring-2 ring-green-600' : 'ring-2 ring-green-400'}`}>
             {myBid && <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${dm ? 'bg-green-900 border border-green-700' : 'bg-green-50 border border-green-200'}`}>
               <CheckCircle className={`w-5 h-5 ${dm ? 'text-green-400' : 'text-green-600'}`} />
               <div>
@@ -60,10 +49,7 @@ export default function BrowseJobsTab({ darkMode, deliveries, loading, profile, 
               <p className={`text-sm ${sub} mb-1`}>Insurance</p>
               <p className={`text-lg font-bold ${dm ? 'text-blue-400' : 'text-blue-600'}`}>{req.insurance_amount.toLocaleString()} sats</p>
             </div>}
-            {!myBid ? <div className="flex gap-2">
-              <button onClick={() => onPlaceBid(req.id, req.offer_amount)} disabled={loading} className="flex-1 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-medium py-3 rounded-lg">Accept for {req.offer_amount.toLocaleString()} sats</button>
-              <button onClick={() => { const c = prompt('Enter your counter-offer amount in sats:'); if (c && parseInt(c) > 0) onPlaceBid(req.id, parseInt(c)); }} disabled={loading} className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 text-white font-medium py-3 rounded-lg">Counter Offer</button>
-            </div> : <div className={`text-center py-3 rounded-lg font-medium text-sm ${dm ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-500'}`}>Bid submitted — awaiting sender response</div>}
+            <div className={`text-center py-3 rounded-lg font-medium text-sm ${dm ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-500'}`}>Bid submitted — awaiting sender response</div>
           </div>
           );
         })}
