@@ -14,7 +14,7 @@ export interface DeliveryRequest {
   payment_invoice?: string; payment_preimage?: string;
 }
 export interface UserProfile { npub: string; display_name?: string; reputation: number; completed_deliveries: number; verified_identity: boolean; }
-export interface AppSettings { darkMode: boolean; nwcUrl: string; displayName?: string; }
+export interface AppSettings { darkMode: boolean; nwcUrl: string; displayName?: string; relays?: string[]; }
 export enum Mode { SENDER='sender', COURIER='courier' }
 export type View = 'create' | 'awaiting' | 'pending' | 'transport' | 'pending_completion' | 'done' | 'browse' | 'bid_approval' | 'active' | 'awaiting_confirmation' | 'completed';
 

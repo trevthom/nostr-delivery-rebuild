@@ -1,13 +1,21 @@
 /**
  * Utility for automated NWC payments in delivery flows.
- * Creates ephemeral NWC clients to generate and pay Lightning invoices.
+ * Uses a shared NWC client when available, otherwise creates ephemeral ones.
  */
 
 export async function createPaymentInvoice(
   nwcUrl: string,
   amountSats: number,
-  memo: string
+  memo: string,
+  existingClient?: any
 ): Promise<string> {
+  if (existingClient) {
+    const res = await existingClient.makeInvoice({
+      amount: amountSats * 1000, // sats to millisats
+      description: memo,
+    });
+    return res.invoice;
+  }
   const { NWCClient } = await import('@getalby/sdk/nwc');
   const client = new NWCClient({ nostrWalletConnectUrl: nwcUrl });
   try {
@@ -23,8 +31,13 @@ export async function createPaymentInvoice(
 
 export async function payPaymentInvoice(
   nwcUrl: string,
-  invoice: string
+  invoice: string,
+  existingClient?: any
 ): Promise<string> {
+  if (existingClient) {
+    const res = await existingClient.payInvoice({ invoice });
+    return res.preimage;
+  }
   const { NWCClient } = await import('@getalby/sdk/nwc');
   const client = new NWCClient({ nostrWalletConnectUrl: nwcUrl });
   try {
