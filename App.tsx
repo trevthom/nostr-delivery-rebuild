@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Package, Key, Settings, LogOut, Bitcoin } from 'lucide-react';
-import { RelayPool, signEvent, nsecToNpub, nsecToHex, isValidNsec, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE } from './nostr';
+import { Package, Key, Settings, LogOut, Bitcoin, Plus, Trash2 } from 'lucide-react';
+import { RelayPool, DEFAULT_RELAYS, signEvent, nsecToNpub, nsecToHex, isValidNsec, genId, KIND_DELIVERY, KIND_BID, KIND_STATUS, KIND_PROFILE } from './nostr';
 import { PkgSize, Mode, getStyles } from './types';
 import NWCWallet from './NWCWallet';
 import type { View, DeliveryRequest, DeliveryBid, ProofOfDelivery, UserProfile, FormState, AppSettings } from './types';
@@ -51,7 +51,10 @@ export default function DeliveryApp() {
   const [isPerson, setIsPerson] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
   const [relayConnected, setRelayConnected] = useState(false);
+  const [relayUrls, setRelayUrls] = useState<string[]>(DEFAULT_RELAYS);
+  const [relayStatuses, setRelayStatuses] = useState<Record<string, boolean>>({});
   const [btcPrice, setBtcPrice] = useState<string | null>(null);
+  const nwcClientRef = useRef<any>(null);
   const [form, setForm] = useState<FormState>({
     pickupAddr: '', pickupInst: '', dropoffAddr: '', dropoffInst: '',
     packages: [{ size: PkgSize.SMALL, description: '', fragile: false, requires_signature: false }],
@@ -68,7 +71,17 @@ export default function DeliveryApp() {
   const settingsRef = useRef<HTMLDivElement>(null);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => { pool.current.connect().then(() => { setRelayConnected(pool.current.connected); console.log('Relays connected:', pool.current.connected); }); }, []);
+  useEffect(() => {
+    pool.current.connect(relayUrls).then(() => {
+      setRelayConnected(pool.current.connected);
+      setRelayStatuses(pool.current.getRelayStatuses());
+    });
+    const statusInterval = setInterval(() => {
+      setRelayStatuses(pool.current.getRelayStatuses());
+      setRelayConnected(Object.values(pool.current.getRelayStatuses()).some(v => v));
+    }, 5000);
+    return () => clearInterval(statusInterval);
+  }, []);
   useEffect(() => {
     const fetchBtcPrice = () => {
       fetch('https://api.coinbase.com/v2/prices/spot?currency=USD')
@@ -159,7 +172,7 @@ export default function DeliveryApp() {
           let paymentPreimage: string | undefined;
           if (req.payment_invoice && nwcUrl) {
             try {
-              paymentPreimage = await payPaymentInvoice(nwcUrl, req.payment_invoice);
+              paymentPreimage = await payPaymentInvoice(nwcUrl, req.payment_invoice, nwcClientRef.current);
             } catch (e) {
               console.error('Auto-confirm payment failed for', req.id, e);
             }
@@ -190,7 +203,7 @@ export default function DeliveryApp() {
           try {
             const ab = req.bids.find(b => b.id === req.accepted_bid);
             const amt = ab?.amount || req.offer_amount;
-            const invoice = await createPaymentInvoice(nwcUrl, amt, `Nostr Delivery payment for ${req.id.substring(0, 8)}`);
+            const invoice = await createPaymentInvoice(nwcUrl, amt, `Nostr Delivery payment for ${req.id.substring(0, 8)}`, nwcClientRef.current);
             const invoiceEv = await signEvent(privHex, KIND_STATUS, JSON.stringify({
               status: req.status, accepted_bid: req.accepted_bid, payment_invoice: invoice, timestamp: Math.floor(Date.now()/1000)
             }), [['delivery_id', req.id], ['status', req.status]]);
@@ -231,6 +244,13 @@ export default function DeliveryApp() {
         setDarkMode(saved.darkMode);
         setNwcUrl(saved.nwcUrl || '');
         if (saved.displayName) setProfile(prev => ({ ...prev, display_name: prev.display_name || saved.displayName }));
+        if (saved.relays && saved.relays.length > 0) {
+          setRelayUrls(saved.relays);
+          pool.current.reconnect(saved.relays).then(() => {
+            setRelayConnected(pool.current.connected);
+            setRelayStatuses(pool.current.getRelayStatuses());
+          });
+        }
       }
       setAuth(true); setShowLogin(false); setNsecInput('');
     } catch { setError('Failed to login.'); } finally { setLoading(false); }
@@ -238,23 +258,55 @@ export default function DeliveryApp() {
   function handleLogout() {
     // Save current settings and profile before clearing state
     if (privHex && profile.npub) {
-      doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
+      doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '', relays: relayUrls });
       doPublishProfile(profile);
     }
-    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear(); publishedExpirations.current.clear(); generatedInvoiceIds.current.clear();
+    setAuth(false); setShowLogin(true); setNsecInput(''); setPrivHex(''); setDarkMode(false); setNwcUrl(''); setRelayUrls(DEFAULT_RELAYS); setProfile({ npub: '', reputation: 4.5, completed_deliveries: 0, verified_identity: false }); setDeliveries([]); setActiveDelivery(null); setError(null); pendingLocal.current.clear(); pendingBids.current.clear(); pendingDeletes.current.clear(); publishedExpirations.current.clear(); generatedInvoiceIds.current.clear(); nwcClientRef.current = null;
   }
   function handleDarkModeToggle() {
     const next = !darkMode; setDarkMode(next);
-    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode: next, nwcUrl, displayName: profile.display_name || '' });
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode: next, nwcUrl, displayName: profile.display_name || '', relays: relayUrls });
   }
   function handleNwcUrlChange(url: string) {
     setNwcUrl(url);
-    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl: url, displayName: profile.display_name || '' });
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl: url, displayName: profile.display_name || '', relays: relayUrls });
+  }
+  function handleNwcClientRef(client: any) {
+    nwcClientRef.current = client;
   }
   function handleUsernameBlur() {
     if (privHex && profile.npub) {
-      doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '' });
+      doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '', relays: relayUrls });
       doPublishProfile(profile);
+    }
+  }
+  async function handleRelayChange(index: number, value: string) {
+    const updated = [...relayUrls];
+    updated[index] = value;
+    setRelayUrls(updated);
+  }
+  async function handleRelayBlur() {
+    const valid = relayUrls.filter(u => u.trim().startsWith('wss://'));
+    if (valid.length === 0) return;
+    await pool.current.reconnect(valid);
+    setRelayConnected(pool.current.connected);
+    setRelayStatuses(pool.current.getRelayStatuses());
+    if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '', relays: valid });
+  }
+  function handleAddRelay() {
+    if (relayUrls.length >= 15) return;
+    setRelayUrls([...relayUrls, '']);
+  }
+  async function handleRemoveRelay(index: number) {
+    if (relayUrls.length <= 1) return;
+    const updated = relayUrls.filter((_, i) => i !== index);
+    setRelayUrls(updated);
+    const valid = updated.filter(u => u.trim().startsWith('wss://'));
+    if (valid.length > 0) {
+      await pool.current.reconnect(valid);
+      setRelayConnected(pool.current.connected);
+      setRelayStatuses(pool.current.getRelayStatuses());
+      if (privHex && profile.npub) doPublishSettings(privHex, profile.npub, { darkMode, nwcUrl, displayName: profile.display_name || '', relays: valid });
     }
   }
 
@@ -336,7 +388,7 @@ export default function DeliveryApp() {
           return;
         }
         try {
-          paymentPreimage = await payPaymentInvoice(nwcUrl, d.payment_invoice);
+          paymentPreimage = await payPaymentInvoice(nwcUrl, d.payment_invoice, nwcClientRef.current);
         } catch (e: any) {
           setError(`Forfeiture payment failed: ${e?.message || 'Unknown error'}. Please try again.`);
           setLoading(false);
@@ -380,7 +432,7 @@ export default function DeliveryApp() {
         try {
           const ab = activeDelivery.bids.find(b => b.id === activeDelivery.accepted_bid);
           const amt = ab?.amount || activeDelivery.offer_amount;
-          paymentInvoice = await createPaymentInvoice(nwcUrl, amt, `Nostr Delivery payment for ${activeDelivery.id.substring(0, 8)}`);
+          paymentInvoice = await createPaymentInvoice(nwcUrl, amt, `Nostr Delivery payment for ${activeDelivery.id.substring(0, 8)}`, nwcClientRef.current);
         } catch (e: any) {
           setError(`Failed to generate payment invoice: ${e?.message || 'Unknown error'}. Make sure your NWC wallet is connected.`);
           setLoading(false);
@@ -409,7 +461,7 @@ export default function DeliveryApp() {
           return;
         }
         try {
-          paymentPreimage = await payPaymentInvoice(nwcUrl, d.payment_invoice);
+          paymentPreimage = await payPaymentInvoice(nwcUrl, d.payment_invoice, nwcClientRef.current);
         } catch (e: any) {
           setError(`Payment failed: ${e?.message || 'Unknown error'}. Please try again.`);
           setLoading(false);
@@ -503,7 +555,40 @@ export default function DeliveryApp() {
           <div className={`p-4 ${sec} rounded-lg`}><div className="flex items-center justify-between mb-2"><h3 className={`font-semibold ${txt}`}>Dark Mode</h3>
             <button onClick={handleDarkModeToggle} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
             <p className={`text-sm ${dm?'text-gray-300':'text-gray-600'}`}>Switch theme</p></div>
-          <NWCWallet darkMode={darkMode} savedNwcUrl={nwcUrl} onNwcUrlChange={handleNwcUrlChange} />
+          <NWCWallet darkMode={darkMode} savedNwcUrl={nwcUrl} onNwcUrlChange={handleNwcUrlChange} onClientRef={handleNwcClientRef} />
+        </div>
+        <div className={`p-4 ${sec} rounded-lg mb-6`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className={`font-semibold ${txt}`}>Relays</h3>
+            {relayUrls.length < 15 && (
+              <button onClick={handleAddRelay} className={`p-1.5 rounded-lg transition-colors ${dm ? 'hover:bg-gray-600 text-gray-400' : 'hover:bg-gray-200 text-gray-500'}`} title="Add relay">
+                <Plus className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="space-y-2">
+            {relayUrls.map((url, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${relayStatuses[url] ? 'bg-green-500' : 'bg-red-500'}`} title={relayStatuses[url] ? 'Connected' : 'Disconnected'} />
+                <input
+                  type="text"
+                  value={url}
+                  onChange={e => handleRelayChange(i, e.target.value)}
+                  onBlur={handleRelayBlur}
+                  onKeyDown={e => { if (e.key === 'Enter') handleRelayBlur(); }}
+                  placeholder="wss://relay.example.com"
+                  spellCheck={false}
+                  className={`flex-1 px-3 py-2 border ${dm ? 'border-gray-600 bg-gray-800 text-white placeholder-gray-500' : 'border-gray-300 bg-white placeholder-gray-400'} rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500`}
+                />
+                {relayUrls.length > 1 && (
+                  <button onClick={() => handleRemoveRelay(i)} className={`p-1.5 rounded-lg transition-colors ${dm ? 'hover:bg-gray-600 text-gray-400' : 'hover:bg-gray-200 text-gray-500'}`} title="Remove relay">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <p className={`mt-2 text-xs ${dm ? 'text-gray-400' : 'text-gray-500'}`}>Up to 15 relays. Changes apply on blur or Enter.</p>
         </div>
         <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">

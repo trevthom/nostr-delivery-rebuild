@@ -87,7 +87,7 @@ export async function signEvent(privHex: string, kind: number, content: string, 
 }
 
 // ---- Relay Pool ----
-const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
 
 export class RelayPool {
   private sockets: Map<string, WebSocket> = new Map();
@@ -221,6 +221,34 @@ export class RelayPool {
       const evs = await this.query(filters, timeoutMs);
       return evs.length > 0;
     } catch { return false; }
+  }
+
+  getRelayStatuses(): Record<string, boolean> {
+    const statuses: Record<string, boolean> = {};
+    for (const url of this.relayUrls) {
+      const ws = this.sockets.get(url);
+      statuses[url] = !!ws && ws.readyState === WebSocket.OPEN;
+    }
+    return statuses;
+  }
+
+  getRelayUrls(): string[] {
+    return [...this.relayUrls];
+  }
+
+  async reconnect(urls: string[]): Promise<void> {
+    // Close connections to relays no longer in the list
+    for (const [url, ws] of this.sockets) {
+      if (!urls.includes(url)) {
+        ws.close();
+        this.sockets.delete(url);
+      }
+    }
+    this.relayUrls = urls;
+    // Connect to new/existing relays
+    const promises = urls.map(url => this.connectOne(url));
+    await Promise.all(promises);
+    this.connected = this.sockets.size > 0;
   }
 
   disconnect() {

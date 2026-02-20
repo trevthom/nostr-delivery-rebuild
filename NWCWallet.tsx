@@ -6,6 +6,7 @@ interface NWCWalletProps {
   darkMode: boolean;
   savedNwcUrl?: string;
   onNwcUrlChange?: (url: string) => void;
+  onClientRef?: (client: any) => void;
 }
 
 interface Transaction {
@@ -22,7 +23,7 @@ interface Transaction {
   metadata?: Record<string, unknown>;
 }
 
-export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWCWalletProps) {
+export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange, onClientRef }: NWCWalletProps) {
   const { dm, inp, txt, sec } = getStyles(darkMode);
 
   const [nwcUrl, setNwcUrl] = useState('');
@@ -54,8 +55,42 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWC
       setNwcUrl(savedNwcUrl);
       connectWallet(savedNwcUrl);
     }
-    return () => { if (clientRef.current) { try { clientRef.current.close(); } catch {} } };
+    return () => {
+      if (clientRef.current) { try { clientRef.current.close(); } catch {} }
+      if (onClientRef) onClientRef(null);
+    };
   }, [savedNwcUrl]);
+
+  // Keepalive: periodically check balance to verify connection, reconnect if needed
+  useEffect(() => {
+    if (!connected || !clientRef.current) return;
+    const keepalive = setInterval(async () => {
+      try {
+        if (clientRef.current) {
+          const res = await clientRef.current.getBalance();
+          setBalance(res.balance);
+        }
+      } catch {
+        // Connection lost, try reconnecting
+        const url = nwcUrl || savedNwcUrl;
+        if (url) {
+          try {
+            const { NWCClient } = await import('@getalby/sdk/nwc');
+            if (clientRef.current) { try { clientRef.current.close(); } catch {} }
+            const client = new NWCClient({ nostrWalletConnectUrl: url.trim() });
+            const balRes = await client.getBalance();
+            clientRef.current = client;
+            if (onClientRef) onClientRef(client);
+            setBalance(balRes.balance);
+            setConnected(true);
+          } catch {
+            // Still disconnected, will retry next interval
+          }
+        }
+      }
+    }, 60000);
+    return () => clearInterval(keepalive);
+  }, [connected, nwcUrl, savedNwcUrl]);
 
   const connectWallet = useCallback(async (url: string) => {
     const trimmed = url.trim();
@@ -74,11 +109,13 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWC
       const balRes = await client.getBalance();
       setBalance(balRes.balance);
       setConnected(true);
+      if (onClientRef) onClientRef(client);
       if (onNwcUrlChange) onNwcUrlChange(trimmed);
     } catch (e: any) {
       setError(e?.message || 'Failed to connect wallet');
       setConnected(false);
       clientRef.current = null;
+      if (onClientRef) onClientRef(null);
     } finally {
       setConnecting(false);
     }
@@ -89,6 +126,7 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWC
     try {
       if (clientRef.current) { try { clientRef.current.close(); } catch {} }
       clientRef.current = null;
+      if (onClientRef) onClientRef(null);
       setConnected(false);
       setBalance(null);
       setTransactions([]);
@@ -201,13 +239,10 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWC
           <Wallet className={`w-5 h-5 ${dm ? 'text-orange-400' : 'text-orange-600'}`} />
           <h3 className={`font-semibold ${txt}`}>Bitcoin Wallet (NWC)</h3>
         </div>
-        {error && (
-          <div className={`mb-3 p-2 text-sm rounded ${dm ? 'bg-red-900 text-red-200' : 'bg-red-50 text-red-700'}`}>
-            {error}
-            <button onClick={() => setError(null)} className="ml-2 font-bold">&times;</button>
-          </div>
-        )}
         <div className="space-y-3">
+          <p className={`text-xs ${dm ? 'text-gray-400' : 'text-gray-500'}`}>
+            Paste your NWC connection string from Alby Hub, Mutiny, Primal, or any NWC-compatible wallet.
+          </p>
           <input
             type="text"
             value={nwcUrl}
@@ -228,9 +263,6 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange }: NWC
               <><Zap className="w-4 h-4" />Connect Wallet</>
             )}
           </button>
-          <p className={`text-xs ${dm ? 'text-gray-400' : 'text-gray-500'}`}>
-            Paste your NWC connection string from Alby Hub, Mutiny, Primal, or any NWC-compatible wallet.
-          </p>
         </div>
       </div>
     );
