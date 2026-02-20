@@ -96,7 +96,7 @@ export default function DeliveryApp() {
   useEffect(() => { if (auth) loadData(); }, [auth, mode]);
   useEffect(() => {
     if (!showSettings) return;
-    const h = (e: MouseEvent) => { if (settingsRef.current && !settingsRef.current.contains(e.target as Node) && settingsBtnRef.current && !settingsBtnRef.current.contains(e.target as Node)) setShowSettings(false); };
+    const h = (e: MouseEvent) => { if (e.clientX >= document.documentElement.clientWidth) return; if (settingsRef.current && !settingsRef.current.contains(e.target as Node) && settingsBtnRef.current && !settingsBtnRef.current.contains(e.target as Node)) setShowSettings(false); };
     document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
   }, [showSettings]);
   const prevSettings = useRef(showSettings);
@@ -552,9 +552,20 @@ export default function DeliveryApp() {
       {showSettings&&<div className="max-w-7xl mx-auto px-4 py-4"><div ref={settingsRef} className={card}>
         <h2 className={`text-xl font-bold mb-6 ${txt}`}>Settings</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          <div className={`p-4 ${sec} rounded-lg`}><div className="flex items-center justify-between mb-2"><h3 className={`font-semibold ${txt}`}>Dark Mode</h3>
-            <button onClick={handleDarkModeToggle} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
-            <p className={`text-sm ${dm?'text-gray-300':'text-gray-600'}`}>Switch theme</p></div>
+          <div className={`p-4 ${sec} rounded-lg flex flex-col`}>
+            <div className="flex items-center justify-between mb-2"><h3 className={`font-semibold ${txt}`}>Dark Mode</h3>
+              <button onClick={handleDarkModeToggle} className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors ${dm?'bg-orange-500':'bg-gray-300'}`}><span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${dm?'translate-x-7':'translate-x-1'}`}/></button></div>
+            <p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-3`}>Switch theme</p>
+            <div className={`border-t ${dm ? 'border-gray-600' : 'border-gray-200'} pt-3 mt-auto`}>
+              <h3 className={`font-semibold ${txt} mb-2`}>Profile</h3>
+              <div className="space-y-2">
+                <div className={`p-2 ${dm?'bg-purple-900':'bg-purple-50'} rounded-lg`}><p className={`text-xs ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Username</p>
+                  <input type="text" value={profile.display_name||''} onChange={e=>setProfile({...profile,display_name:e.target.value})} onBlur={handleUsernameBlur} placeholder="Optional" spellCheck={false} className={`w-full text-sm font-medium ${dm?'bg-purple-800 text-purple-300 placeholder-purple-500':'bg-white text-purple-600 placeholder-purple-400'} border ${dm?'border-purple-700':'border-purple-300'} rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500`}/></div>
+                <div className={`p-2 ${dm?'bg-orange-900':'bg-orange-50'} rounded-lg`}><p className={`text-xs ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Reputation</p><p className={`text-lg font-bold ${dm?'text-orange-400':'text-orange-600'}`}>{profile.completed_deliveries===0?'N/A':`${profile.reputation.toFixed(1)} ⭐`}</p></div>
+                <div className={`p-2 ${dm?'bg-green-900':'bg-green-50'} rounded-lg`}><p className={`text-xs ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Total Sats Earned</p><p className={`text-lg font-bold ${dm?'text-green-400':'text-green-600'}`}>{totalSatsEarned.toLocaleString()} sats{btcPrice ? ` ($${(Math.floor(totalSatsEarned / 100000000 * parseFloat(btcPrice.replace(/,/g, '')) * 100) / 100).toFixed(2)})` : ''}</p></div>
+              </div>
+            </div>
+          </div>
           <NWCWallet darkMode={darkMode} savedNwcUrl={nwcUrl} onNwcUrlChange={handleNwcUrlChange} onClientRef={handleNwcClientRef} />
         </div>
         <div className={`p-4 ${sec} rounded-lg mb-6`}>
@@ -589,13 +600,6 @@ export default function DeliveryApp() {
             ))}
           </div>
           <p className={`mt-2 text-xs ${dm ? 'text-gray-400' : 'text-gray-500'}`}>Up to 15 relays. Changes apply on blur or Enter.</p>
-        </div>
-        <h3 className={`text-lg font-bold mb-4 ${txt}`}>Profile</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className={`p-4 ${dm?'bg-purple-900':'bg-purple-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Username</p>
-            <input type="text" value={profile.display_name||''} onChange={e=>setProfile({...profile,display_name:e.target.value})} onBlur={handleUsernameBlur} placeholder="Optional" spellCheck={false} className={`w-full text-sm font-medium ${dm?'bg-purple-800 text-purple-300 placeholder-purple-500':'bg-white text-purple-600 placeholder-purple-400'} border ${dm?'border-purple-700':'border-purple-300'} rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500`}/></div>
-          <div className={`p-4 ${dm?'bg-orange-900':'bg-orange-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Reputation</p><p className={`text-2xl font-bold ${dm?'text-orange-400':'text-orange-600'}`}>{profile.completed_deliveries===0?'N/A':`${profile.reputation.toFixed(1)} ⭐`}</p></div>
-          <div className={`p-4 ${dm?'bg-green-900':'bg-green-50'} rounded-lg`}><p className={`text-sm ${dm?'text-gray-300':'text-gray-600'} mb-1`}>Total Sats Earned</p><p className={`text-2xl font-bold ${dm?'text-green-400':'text-green-600'}`}>{totalSatsEarned.toLocaleString()} sats</p></div>
         </div>
       </div></div>}
 
