@@ -289,7 +289,7 @@ export default function NWCWallet({ darkMode, savedNwcUrl, onNwcUrlChange, onCli
         </button>
       </div>
 
-      {error && (
+      {error && !/relay/i.test(error) && (
         <div className={`mb-3 p-2 text-sm rounded ${dm ? 'bg-red-900 text-red-200' : 'bg-red-50 text-red-700'}`}>
           {error}
           <button onClick={() => setError(null)} className="ml-2 font-bold">&times;</button>
